@@ -1318,26 +1318,64 @@ function Show-Dashboard {
             $ip = $this.Tag
             $ruleName = "SecurityMonitor_Block_$ip"
             $confirm = [System.Windows.Forms.MessageBox]::Show(
-                "Are you sure you want to block IP address $ip ?`n`nThis will create Windows Firewall rules to block all inbound and outbound traffic from/to this IP.`n`nRule name: $ruleName",
+                "Are you sure you want to block IP address $ip ?`n`nThis will create Windows Firewall rules to block all inbound and outbound traffic from/to this IP.`n`nRule name: $ruleName`n`nA UAC prompt will appear for elevation.",
                 "Block IP - Confirm",
                 [System.Windows.Forms.MessageBoxButtons]::YesNo,
                 [System.Windows.Forms.MessageBoxIcon]::Warning
             )
             if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
                 try {
-                    $existIn = Get-NetFirewallRule -DisplayName "${ruleName}_In" -ErrorAction SilentlyContinue
-                    if ($existIn) {
-                        [System.Windows.Forms.MessageBox]::Show("IP $ip is already blocked.", "Already Blocked", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
-                        return
+                    $scriptFile = Join-Path $env:TEMP "SecurityMonitor_BlockIP_$(Get-Random).ps1"
+                    $resultFile = Join-Path $env:TEMP "SecurityMonitor_BlockResult_$(Get-Random).txt"
+
+                    $fwScript = @"
+try {
+    `$existIn = Get-NetFirewallRule -DisplayName '${ruleName}_In' -ErrorAction SilentlyContinue
+    if (`$existIn) {
+        'ALREADY_BLOCKED' | Out-File -FilePath '$resultFile' -Encoding UTF8
+        exit
+    }
+    New-NetFirewallRule -DisplayName '${ruleName}_In' -Direction Inbound -Action Block -RemoteAddress '$ip' -Profile Any -ErrorAction Stop | Out-Null
+    New-NetFirewallRule -DisplayName '${ruleName}_Out' -Direction Outbound -Action Block -RemoteAddress '$ip' -Profile Any -ErrorAction Stop | Out-Null
+    'SUCCESS' | Out-File -FilePath '$resultFile' -Encoding UTF8
+} catch {
+    "ERROR: `$(`$_.Exception.Message)" | Out-File -FilePath '$resultFile' -Encoding UTF8
+}
+"@
+                    [System.IO.File]::WriteAllText($scriptFile, $fwScript)
+
+                    $proc = Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $scriptFile -Verb RunAs -PassThru -ErrorAction Stop
+                    $proc.WaitForExit(15000)
+
+                    if (Test-Path $resultFile) {
+                        $result = Get-Content $resultFile -Raw -ErrorAction SilentlyContinue
+                        Remove-Item $resultFile -Force -ErrorAction SilentlyContinue
+                        Remove-Item $scriptFile -Force -ErrorAction SilentlyContinue
+
+                        if ($result -match '^SUCCESS') {
+                            $this.Text = "IP Blocked"
+                            $this.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
+                            $this.Enabled = $false
+                            [System.Windows.Forms.MessageBox]::Show("IP $ip has been blocked (Admin).`n`nInbound rule: ${ruleName}_In`nOutbound rule: ${ruleName}_Out`n`nTo unblock, delete these rules in Windows Firewall.", "IP Blocked", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                        } elseif ($result -match '^ALREADY_BLOCKED') {
+                            $this.Text = "IP Already Blocked"
+                            $this.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
+                            $this.Enabled = $false
+                            [System.Windows.Forms.MessageBox]::Show("IP $ip is already blocked.", "Already Blocked", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                        } else {
+                            $errMsg = $result -replace '^ERROR:\s*', ''
+                            [System.Windows.Forms.MessageBox]::Show("Failed to block IP:`n$errMsg", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                        }
+                    } else {
+                        Remove-Item $scriptFile -Force -ErrorAction SilentlyContinue
+                        [System.Windows.Forms.MessageBox]::Show("Operation timed out or was cancelled.", "Timeout", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                     }
-                    New-NetFirewallRule -DisplayName "${ruleName}_In" -Direction Inbound -Action Block -RemoteAddress $ip -Profile Any -ErrorAction Stop | Out-Null
-                    New-NetFirewallRule -DisplayName "${ruleName}_Out" -Direction Outbound -Action Block -RemoteAddress $ip -Profile Any -ErrorAction Stop | Out-Null
-                    $this.Text = "IP Blocked"
-                    $this.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
-                    $this.Enabled = $false
-                    [System.Windows.Forms.MessageBox]::Show("IP $ip has been blocked.`n`nInbound rule: ${ruleName}_In`nOutbound rule: ${ruleName}_Out`n`nTo unblock, delete these rules in Windows Firewall.", "IP Blocked", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
                 } catch {
-                    [System.Windows.Forms.MessageBox]::Show("Failed to block IP. Run as Administrator.`n`nError: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                    if ($_.Exception.Message -match 'canceled by the user|cancelled') {
+                        [System.Windows.Forms.MessageBox]::Show("UAC elevation was cancelled by the user.", "Cancelled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    } else {
+                        [System.Windows.Forms.MessageBox]::Show("Failed to launch elevated process:`n$($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                    }
                 }
             }
         }
@@ -1374,7 +1412,7 @@ function Show-Dashboard {
         }
 
         $confirm = [System.Windows.Forms.MessageBox]::Show(
-            "Are you sure you want to $descText`n`nThis action modifies the Windows Registry.",
+            "Are you sure you want to $descText`n`nThis action requires Administrator privileges.`nA UAC prompt will appear for elevation.",
             "Restore Registry - Confirm",
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Warning
@@ -1382,54 +1420,103 @@ function Show-Dashboard {
         if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
 
         try {
-            switch ($action) {
+            # Build the PowerShell command to run elevated
+            $psCmd = switch ($action) {
                 "delete_key" {
-                    Remove-Item -Path $regPath -Recurse -Force -ErrorAction Stop
-                    [System.Windows.Forms.MessageBox]::Show("Registry key deleted:`n$regPath", "Registry Restored", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    "Remove-Item -Path '$regPath' -Recurse -Force -ErrorAction Stop"
                 }
                 "delete_value" {
-                    Remove-ItemProperty -Path $regPath -Name $valueName -Force -ErrorAction Stop
-                    [System.Windows.Forms.MessageBox]::Show("Registry value '$valueName' deleted from:`n$regPath", "Registry Restored", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    "Remove-ItemProperty -Path '$regPath' -Name '$valueName' -Force -ErrorAction Stop"
                 }
                 "restore_value" {
-                    Set-ItemProperty -Path $regPath -Name $valueName -Value $expected -ErrorAction Stop
-                    [System.Windows.Forms.MessageBox]::Show("Registry value '$valueName' restored to '$expected' in:`n$regPath", "Registry Restored", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    "Set-ItemProperty -Path '$regPath' -Name '$valueName' -Value '$expected' -ErrorAction Stop"
                 }
                 "restore_snapshot" {
+                    # For snapshot restore, serialize the snapshot to a temp file
                     $snapshot = $script:RegistrySnapshotCache[$regPath]
                     if (-not $snapshot) {
                         [System.Windows.Forms.MessageBox]::Show("No baseline snapshot available for this key.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                         return
                     }
-                    # Get current values
-                    $currentProps = Get-ItemProperty -Path $regPath -ErrorAction Stop
-                    $currentVals = @{}
-                    foreach ($p in $currentProps.PSObject.Properties) {
-                        if ($p.Name -notin @("PSPath","PSParentPath","PSChildName","PSDrive","PSProvider")) {
-                            $currentVals[$p.Name] = $p.Value
-                        }
-                    }
-                    # Remove entries not in snapshot
-                    foreach ($k in $currentVals.Keys) {
-                        if (-not $snapshot.ContainsKey($k)) {
-                            Remove-ItemProperty -Path $regPath -Name $k -Force -ErrorAction SilentlyContinue
-                        }
-                    }
-                    # Restore snapshot values
-                    foreach ($k in $snapshot.Keys) {
-                        Set-ItemProperty -Path $regPath -Name $k -Value $snapshot[$k] -ErrorAction SilentlyContinue
-                    }
-                    # Update baseline hash
-                    $newHash = Get-RegistryHash -KeyPath $regPath
-                    if ($newHash) { $script:RegistryBaseline[$regPath] = $newHash }
-                    [System.Windows.Forms.MessageBox]::Show("Registry key restored to baseline snapshot:`n$regPath", "Registry Restored", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    $tmpFile = Join-Path $env:TEMP "SecurityMonitor_snapshot_$(Get-Random).xml"
+                    $snapshot | Export-Clixml -Path $tmpFile -Force
+                    @"
+`$snapshot = Import-Clixml -Path '$tmpFile'
+`$currentProps = Get-ItemProperty -Path '$regPath' -ErrorAction Stop
+foreach (`$p in `$currentProps.PSObject.Properties) {
+    if (`$p.Name -notin @('PSPath','PSParentPath','PSChildName','PSDrive','PSProvider')) {
+        if (-not `$snapshot.ContainsKey(`$p.Name)) {
+            Remove-ItemProperty -Path '$regPath' -Name `$p.Name -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+foreach (`$k in `$snapshot.Keys) {
+    Set-ItemProperty -Path '$regPath' -Name `$k -Value `$snapshot[`$k] -ErrorAction SilentlyContinue
+}
+Remove-Item -Path '$tmpFile' -Force -ErrorAction SilentlyContinue
+"@
                 }
             }
-            $this.Text = "Restored"
-            $this.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
-            $this.Enabled = $false
+
+            if (-not $psCmd) { return }
+
+            # Write command to temp script file for clean elevation
+            $scriptFile = Join-Path $env:TEMP "SecurityMonitor_RegFix_$(Get-Random).ps1"
+            $resultFile = Join-Path $env:TEMP "SecurityMonitor_RegResult_$(Get-Random).txt"
+
+            # Wrap command with result reporting
+            $fullScript = @"
+try {
+    $psCmd
+    'SUCCESS' | Out-File -FilePath '$resultFile' -Encoding UTF8
+} catch {
+    "ERROR: `$(`$_.Exception.Message)" | Out-File -FilePath '$resultFile' -Encoding UTF8
+}
+"@
+            [System.IO.File]::WriteAllText($scriptFile, $fullScript)
+
+            # Launch elevated PowerShell with UAC prompt
+            $proc = Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $scriptFile -Verb RunAs -PassThru -ErrorAction Stop
+
+            # Wait for completion (with timeout)
+            $proc.WaitForExit(15000)
+
+            # Check result
+            if (Test-Path $resultFile) {
+                $result = Get-Content $resultFile -Raw -ErrorAction SilentlyContinue
+                Remove-Item $resultFile -Force -ErrorAction SilentlyContinue
+                Remove-Item $scriptFile -Force -ErrorAction SilentlyContinue
+
+                if ($result -match '^SUCCESS') {
+                    # Update local baseline if applicable
+                    if ($action -eq "restore_snapshot") {
+                        $newHash = Get-RegistryHash -KeyPath $regPath
+                        if ($newHash) { $script:RegistryBaseline[$regPath] = $newHash }
+                    }
+                    $actionDesc = switch ($action) {
+                        "delete_key"       { "Registry key deleted:`n$regPath" }
+                        "delete_value"     { "Registry value '$valueName' deleted from:`n$regPath" }
+                        "restore_value"    { "Registry value '$valueName' restored to '$expected' in:`n$regPath" }
+                        "restore_snapshot" { "Registry key restored to baseline snapshot:`n$regPath" }
+                    }
+                    [System.Windows.Forms.MessageBox]::Show($actionDesc, "Registry Restored (Admin)", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    $this.Text = "Restored"
+                    $this.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
+                    $this.Enabled = $false
+                } else {
+                    $errMsg = $result -replace '^ERROR:\s*', ''
+                    [System.Windows.Forms.MessageBox]::Show("Operation failed:`n$errMsg", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                }
+            } else {
+                Remove-Item $scriptFile -Force -ErrorAction SilentlyContinue
+                [System.Windows.Forms.MessageBox]::Show("Operation timed out or was cancelled.", "Timeout", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            }
         } catch {
-            [System.Windows.Forms.MessageBox]::Show("Failed to modify registry. Run as Administrator.`n`nError: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            if ($_.Exception.Message -match 'canceled by the user|cancelled') {
+                [System.Windows.Forms.MessageBox]::Show("UAC elevation was cancelled by the user.", "Cancelled", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            } else {
+                [System.Windows.Forms.MessageBox]::Show("Failed to launch elevated process:`n$($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            }
         }
     })
     $detailBox.Controls.Add($restoreRegBtn)
