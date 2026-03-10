@@ -267,13 +267,16 @@ $script:DashboardForm = $null
 function Show-Dashboard {
     param([string]$OpenTab = "Status")
 
-    # If dashboard already open, bring to front and switch tab
+    # If dashboard already open, bring to front, restart timers, and switch tab
     try {
         if ($script:DashboardForm -and -not $script:DashboardForm.IsDisposed) {
             $script:DashboardForm.Show()
             $script:DashboardForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
             $script:DashboardForm.BringToFront()
             $script:DashboardForm.Activate()
+            # Resume timers that were paused on hide
+            try { if ($script:DashTimer)  { $script:DashTimer.Start() } } catch {}
+            try { if ($script:PulseTimer) { $script:PulseTimer.Start() } } catch {}
             if ($OpenTab -and $script:SwitchPageFn) {
                 try { & $script:SwitchPageFn $OpenTab } catch {}
             }
@@ -309,13 +312,15 @@ function Show-Dashboard {
     $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
     $form.MinimumSize = New-Object System.Drawing.Size(1050, 680)
     $form.FormBorderStyle = "Sizable"
-    $form.TopMost = $true
+    $form.TopMost = $false
 
-    # Minimize to tray instead of closing
+    # Minimize to tray instead of closing — pause timers to save resources
     $form.Add_FormClosing({
         param($s, $e)
         $e.Cancel = $true
         $s.Hide()
+        try { if ($script:DashTimer)  { $script:DashTimer.Stop() } } catch {}
+        try { if ($script:PulseTimer) { $script:PulseTimer.Stop() } } catch {}
     })
 
     $script:DashboardForm = $form
@@ -339,7 +344,7 @@ function Show-Dashboard {
     $sidebar.Controls.Add($logoLabel)
 
     $verLabel = New-Object System.Windows.Forms.Label
-    $verLabel.Text = "v6.0 Dashboard"
+    $verLabel.Text = "v7.0 Dashboard"
     $verLabel.Location = New-Object System.Drawing.Point(0, 65)
     $verLabel.Size = New-Object System.Drawing.Size(200, 18)
     $verLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
@@ -384,12 +389,14 @@ function Show-Dashboard {
     # Store contentPanel in script scope for collapse/expand repositioning
     $script:ContentPanel = $contentPanel
 
-    # Create page panels (each tab is a Panel that fills contentPanel)
+    # Create page panels (each tab is a Panel — manual size/anchor, NOT Dock=Fill)
     $script:Pages = @{}
     $pages = $script:Pages
     foreach ($pageName in @("Status", "Alerts", "Settings", "Logs")) {
         $p = New-Object System.Windows.Forms.Panel
-        $p.Dock = "Fill"
+        $p.Location = New-Object System.Drawing.Point(0, 0)
+        $p.Size = $contentPanel.ClientSize
+        $p.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
         $p.BackColor = $colBg
         $p.Visible = $false
         $p.AutoScroll = $true
@@ -473,7 +480,14 @@ function Show-Dashboard {
     # Navigation switching scriptblock (stored in script scope so closures can reach it)
     $script:SwitchPageFn = {
         param([string]$targetName)
-        foreach ($pKey in $script:Pages.Keys) { $script:Pages[$pKey].Visible = ($pKey -eq $targetName) }
+        foreach ($pKey in $script:Pages.Keys) {
+            if ($pKey -eq $targetName) {
+                $script:Pages[$pKey].Visible = $true
+                $script:Pages[$pKey].BringToFront()
+            } else {
+                $script:Pages[$pKey].Visible = $false
+            }
+        }
         foreach ($nb in $script:NavButtons) {
             if ($nb.Tag -eq $targetName) {
                 $nb.BackColor = [System.Drawing.Color]::FromArgb(0, 90, 160)
@@ -528,9 +542,9 @@ function Show-Dashboard {
     $statusPage.Controls.Add($statusText)
 
     # Pulse timer for the dot
-    $pulseTimer = New-Object System.Windows.Forms.Timer
-    $pulseTimer.Interval = 800
-    $pulseTimer.Add_Tick({
+    $script:PulseTimer = New-Object System.Windows.Forms.Timer
+    $script:PulseTimer.Interval = 800
+    $script:PulseTimer.Add_Tick({
         try {
             if ($script:StatusBright) {
                 $script:StatusDotPanel.BackColor = [System.Drawing.Color]::FromArgb(0, 100, 50)
@@ -540,15 +554,16 @@ function Show-Dashboard {
             $script:StatusBright = -not $script:StatusBright
         } catch {}
     })
-    $pulseTimer.Start()
+    $script:PulseTimer.Start()
 
     # Stat cards with accent bar and icon
     function New-StatCard {
-        param($parent, $x, $y, $label, $valueVar, $accentColor, $icon)
+        param($parent, $x, $y, $label, $valueVar, $accentColor, $icon, [scriptblock]$onClick = $null)
         $card = New-Object System.Windows.Forms.Panel
         $card.Location = New-Object System.Drawing.Point($x, $y)
         $card.Size = New-Object System.Drawing.Size(185, 90)
         $card.BackColor = $colCard
+        $card.Cursor = [System.Windows.Forms.Cursors]::Hand
         $card.Tag = "card"
         $parent.Controls.Add($card)
 
@@ -592,16 +607,40 @@ function Show-Dashboard {
         $card.Add_MouseLeave($hoverLeave)
         foreach ($c in $card.Controls) { $c.Add_MouseEnter({ $this.Parent.BackColor = [System.Drawing.Color]::FromArgb(42, 42, 62) }); $c.Add_MouseLeave({ $this.Parent.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 48) }) }
 
+        # Click handler — propagate to all children
+        if ($onClick) {
+            $card.Add_Click($onClick)
+            foreach ($c in $card.Controls) { $c.Add_Click($onClick) }
+        }
+
         return $val
     }
 
-    $script:LblAlerts      = New-StatCard $statusPage 25  65  "Total Alerts"       "valAlerts"   $colRed    "$([char]0x26A0)"
-    $script:LblConnections = New-StatCard $statusPage 220 65  "Connections"        "valConns"    $colAccent "$([char]0x1F310)"
-    $script:LblProcesses   = New-StatCard $statusPage 415 65  "Processes"          "valProcs"    $colGreen  "$([char]0x2699)"
+    $script:LblAlerts      = New-StatCard $statusPage 25  65  "Total Alerts"       "valAlerts"   $colRed    "$([char]0x26A0)" -onClick { try { & $script:SwitchPageFn "Alerts" } catch {} }
+    $script:LblConnections = New-StatCard $statusPage 220 65  "Connections"        "valConns"    $colAccent "$([char]0x1F310)" -onClick {
+        try {
+            $conns = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+                Where-Object { $_.RemoteAddress -notmatch '^(127\.|0\.|::1|::$)' } |
+                Select-Object -First 30 |
+                ForEach-Object {
+                    $proc = (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName
+                    "$($proc):$($_.LocalPort) -> $($_.RemoteAddress):$($_.RemotePort)"
+                }
+            $text = if ($conns) { $conns -join "`n" } else { "No active external connections." }
+            [System.Windows.Forms.MessageBox]::Show($text, "Active Connections ($($conns.Count))", "OK", "Information")
+        } catch {}
+    }
+    $script:LblProcesses   = New-StatCard $statusPage 415 65  "Processes"          "valProcs"    $colGreen  "$([char]0x2699)" -onClick {
+        try {
+            $procs = $script:KnownProcesses.Keys | Sort-Object | Select-Object -First 40
+            $text = if ($procs) { $procs -join "`n" } else { "No monitored processes yet." }
+            [System.Windows.Forms.MessageBox]::Show($text, "Monitored Processes ($($procs.Count))", "OK", "Information")
+        } catch {}
+    }
     $script:LblUptime      = New-StatCard $statusPage 610 65  "Uptime"             "valUptime"   $colOrange "$([char]0x23F1)"
     $script:LblUptime.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Bold)
 
-    # Computer info
+    # Computer info (expanded with scan count, start time, clickable log dir)
     $infoBox = New-Object System.Windows.Forms.Panel
     $infoBox.Location = New-Object System.Drawing.Point(25, 170)
     $infoBox.Size = New-Object System.Drawing.Size(770, 75)
@@ -610,16 +649,17 @@ function Show-Dashboard {
     $statusPage.Controls.Add($infoBox)
 
     $infoItems = @(
-        @{ L = "Computer";  V = $env:COMPUTERNAME; X = 15 },
-        @{ L = "User";      V = $env:USERNAME;     X = 210 },
-        @{ L = "Interval";  V = "${IntervalSeconds}s"; X = 405 },
-        @{ L = "Log Dir";   V = $LogDir;           X = 540 }
+        @{ L = "Computer";   V = $env:COMPUTERNAME; X = 15 },
+        @{ L = "User";       V = $env:USERNAME;     X = 155 },
+        @{ L = "Interval";   V = "${IntervalSeconds}s"; X = 290 },
+        @{ L = "Started";    V = $script:StartTime.ToString("HH:mm:ss"); X = 390 },
+        @{ L = "Scans";      V = "0";               X = 500 }
     )
     foreach ($ii in $infoItems) {
         $il = New-Object System.Windows.Forms.Label
         $il.Text = $ii.L
         $il.Location = New-Object System.Drawing.Point($ii.X, 10)
-        $il.Size = New-Object System.Drawing.Size(180, 18)
+        $il.Size = New-Object System.Drawing.Size(120, 18)
         $il.Font = New-Object System.Drawing.Font("Segoe UI", 8)
         $il.ForeColor = $colTextDim
         $infoBox.Controls.Add($il)
@@ -627,11 +667,149 @@ function Show-Dashboard {
         $iv = New-Object System.Windows.Forms.Label
         $iv.Text = $ii.V
         $iv.Location = New-Object System.Drawing.Point($ii.X, 30)
-        $iv.Size = New-Object System.Drawing.Size(180, 30)
+        $iv.Size = New-Object System.Drawing.Size(120, 30)
         $iv.Font = New-Object System.Drawing.Font("Consolas", 10, [System.Drawing.FontStyle]::Bold)
         $iv.ForeColor = $colTextMain
+        if ($ii.L -eq "Scans") { $iv.Name = "scanCountLabel" ; $script:ScanCountLabel = $iv }
         $infoBox.Controls.Add($iv)
     }
+
+    # Clickable log directory link
+    $logDirLabel = New-Object System.Windows.Forms.Label
+    $logDirLabel.Text = "Log Dir"
+    $logDirLabel.Location = New-Object System.Drawing.Point(600, 10)
+    $logDirLabel.Size = New-Object System.Drawing.Size(160, 18)
+    $logDirLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $logDirLabel.ForeColor = $colTextDim
+    $infoBox.Controls.Add($logDirLabel)
+
+    $logDirLink = New-Object System.Windows.Forms.LinkLabel
+    $logDirLink.Text = $LogDir
+    $logDirLink.Location = New-Object System.Drawing.Point(600, 30)
+    $logDirLink.Size = New-Object System.Drawing.Size(160, 30)
+    $logDirLink.Font = New-Object System.Drawing.Font("Consolas", 8.5, [System.Drawing.FontStyle]::Bold)
+    $logDirLink.LinkColor = $colAccent
+    $logDirLink.ActiveLinkColor = [System.Drawing.Color]::White
+    $logDirLink.VisitedLinkColor = $colAccent
+    $capturedLogDir = $LogDir
+    $logDirLink.Add_LinkClicked({ Start-Process explorer.exe $capturedLogDir })
+    $infoBox.Controls.Add($logDirLink)
+
+    # ── Security Posture Panel ──
+    $secPosturePanel = New-Object System.Windows.Forms.Panel
+    $secPosturePanel.Location = New-Object System.Drawing.Point(25, 258)
+    $secPosturePanel.Size = New-Object System.Drawing.Size(770, 52)
+    $secPosturePanel.BackColor = $colCard
+    $secPosturePanel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $statusPage.Controls.Add($secPosturePanel)
+
+    $spTitle = New-Object System.Windows.Forms.Label
+    $spTitle.Text = "Security Posture"
+    $spTitle.Location = New-Object System.Drawing.Point(12, 4)
+    $spTitle.Size = New-Object System.Drawing.Size(200, 18)
+    $spTitle.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
+    $spTitle.ForeColor = $colAccent
+    $secPosturePanel.Controls.Add($spTitle)
+
+    # Security posture indicators
+    $spItems = @(
+        @{ L = "Defender"; X = 12 },
+        @{ L = "Firewall"; X = 165 },
+        @{ L = "UAC";      X = 318 },
+        @{ L = "RDP";      X = 471 }
+    )
+    $script:SecPostureDots = @{}
+    $script:SecPostureLabels = @{}
+    foreach ($spi in $spItems) {
+        $dot = New-Object System.Windows.Forms.Panel
+        $dot.Location = New-Object System.Drawing.Point($spi.X, 28)
+        $dot.Size = New-Object System.Drawing.Size(12, 12)
+        $dot.BackColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+        $secPosturePanel.Controls.Add($dot)
+        $script:SecPostureDots[$spi.L] = $dot
+
+        $spLbl = New-Object System.Windows.Forms.Label
+        $spLbl.Text = "$($spi.L): ..."
+        $spLbl.Location = New-Object System.Drawing.Point(($spi.X + 18), 26)
+        $spLbl.Size = New-Object System.Drawing.Size(130, 16)
+        $spLbl.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+        $spLbl.ForeColor = $colTextDim
+        $spLbl.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $spLbl.Tag = $spi.L
+        $spLbl.Add_Click({
+            $key = $this.Tag
+            try {
+                $info = switch ($key) {
+                    "Defender" {
+                        $d = Get-MpComputerStatus -ErrorAction SilentlyContinue
+                        if ($d) { "Antivirus Enabled: $($d.AntivirusEnabled)`nReal-Time Protection: $($d.RealTimeProtectionEnabled)`nDefinition Age: $($d.AntivirusSignatureAge) day(s)`nLast Scan: $($d.FullScanEndTime)" } else { "Windows Defender status unavailable." }
+                    }
+                    "Firewall" {
+                        $fw = Get-NetFirewallProfile -ErrorAction SilentlyContinue
+                        ($fw | ForEach-Object { "$($_.Name): $( if ($_.Enabled) {'Enabled'} else {'DISABLED'} )" }) -join "`n"
+                    }
+                    "UAC" {
+                        $uac = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -ErrorAction SilentlyContinue).EnableLUA
+                        if ($uac -eq 1) { "UAC is Enabled" } else { "UAC is DISABLED - security risk!" }
+                    }
+                    "RDP" {
+                        $rdp = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -ErrorAction SilentlyContinue).fDenyTSConnections
+                        if ($rdp -eq 1) { "RDP is Disabled (secure)" } else { "RDP is ENABLED - connections allowed" }
+                    }
+                }
+                [System.Windows.Forms.MessageBox]::Show($info, "$key Details", "OK", "Information")
+            } catch { [System.Windows.Forms.MessageBox]::Show("Could not retrieve $key status.", "$key", "OK", "Warning") }
+        })
+        $secPosturePanel.Controls.Add($spLbl)
+        $script:SecPostureLabels[$spi.L] = $spLbl
+    }
+
+    # ── Network Activity Panel ──
+    $netPanel = New-Object System.Windows.Forms.Panel
+    $netPanel.Location = New-Object System.Drawing.Point(25, 318)
+    $netPanel.Size = New-Object System.Drawing.Size(770, 60)
+    $netPanel.BackColor = $colCard
+    $netPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $statusPage.Controls.Add($netPanel)
+
+    $netTitle = New-Object System.Windows.Forms.Label
+    $netTitle.Text = "Network Activity"
+    $netTitle.Location = New-Object System.Drawing.Point(12, 4)
+    $netTitle.Size = New-Object System.Drawing.Size(200, 18)
+    $netTitle.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
+    $netTitle.ForeColor = $colAccent
+    $netPanel.Controls.Add($netTitle)
+
+    $script:NetActivityLabel = New-Object System.Windows.Forms.Label
+    $script:NetActivityLabel.Text = "Gathering network data..."
+    $script:NetActivityLabel.Location = New-Object System.Drawing.Point(12, 24)
+    $script:NetActivityLabel.Size = New-Object System.Drawing.Size(600, 30)
+    $script:NetActivityLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+    $script:NetActivityLabel.ForeColor = $colTextMain
+    $netPanel.Controls.Add($script:NetActivityLabel)
+
+    $viewAllConns = New-Object System.Windows.Forms.LinkLabel
+    $viewAllConns.Text = "View All Connections"
+    $viewAllConns.Location = New-Object System.Drawing.Point(640, 24)
+    $viewAllConns.Size = New-Object System.Drawing.Size(120, 18)
+    $viewAllConns.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+    $viewAllConns.LinkColor = $colAccent
+    $viewAllConns.ActiveLinkColor = [System.Drawing.Color]::White
+    $viewAllConns.VisitedLinkColor = $colAccent
+    $viewAllConns.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+    $viewAllConns.Add_LinkClicked({
+        try {
+            $allConns = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+                Where-Object { $_.RemoteAddress -notmatch '^(127\.|0\.|::1|::$)' } |
+                ForEach-Object {
+                    $proc = (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName
+                    "$($proc):$($_.LocalPort) -> $($_.RemoteAddress):$($_.RemotePort)"
+                }
+            $text = if ($allConns) { $allConns -join "`n" } else { "No active external connections." }
+            [System.Windows.Forms.MessageBox]::Show($text, "All Connections ($($allConns.Count))", "OK", "Information")
+        } catch {}
+    })
+    $netPanel.Controls.Add($viewAllConns)
 
     # ── Modern ListView styling helper ──
     # Applies dark OwnerDraw theme with custom header, row highlights, no grid lines
@@ -747,7 +925,7 @@ function Show-Dashboard {
     # ── System Health Gauges ──
     $healthLabel = New-Object System.Windows.Forms.Label
     $healthLabel.Text = "System Health"
-    $healthLabel.Location = New-Object System.Drawing.Point(25, 260)
+    $healthLabel.Location = New-Object System.Drawing.Point(25, 390)
     $healthLabel.Size = New-Object System.Drawing.Size(200, 22)
     $healthLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
     $healthLabel.ForeColor = $colAccent
@@ -797,24 +975,37 @@ function Show-Dashboard {
         return @{ Fill = $barFill; Label = $gv }
     }
 
-    $script:CpuGauge  = New-GaugeBar $statusPage 25  285 "CPU"  "cpuBar"
-    $script:RamGauge  = New-GaugeBar $statusPage 275 285 "RAM"  "ramBar"
-    $script:DiskGauge = New-GaugeBar $statusPage 525 285 "DISK" "diskBar"
+    $script:CpuGauge  = New-GaugeBar $statusPage 25  415 "CPU"  "cpuBar"
+    $script:RamGauge  = New-GaugeBar $statusPage 275 415 "RAM"  "ramBar"
+    $script:DiskGauge = New-GaugeBar $statusPage 525 415 "DISK" "diskBar"
 
-    # Recent alerts preview on status page
+    # Recent alerts preview on status page (Enhancement 4: "View All >>" link)
     $recentLabel = New-Object System.Windows.Forms.Label
     $recentLabel.Text = "Recent Alerts"
-    $recentLabel.Location = New-Object System.Drawing.Point(25, 340)
+    $recentLabel.Location = New-Object System.Drawing.Point(25, 470)
     $recentLabel.Size = New-Object System.Drawing.Size(300, 24)
     $recentLabel.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
     $recentLabel.ForeColor = $colOrange
     $statusPage.Controls.Add($recentLabel)
 
+    # "View All >>" link next to Recent Alerts title
+    $viewAllLink = New-Object System.Windows.Forms.LinkLabel
+    $viewAllLink.Text = "View All >>"
+    $viewAllLink.Location = New-Object System.Drawing.Point(700, 474)
+    $viewAllLink.Size = New-Object System.Drawing.Size(90, 18)
+    $viewAllLink.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $viewAllLink.LinkColor = $colAccent
+    $viewAllLink.ActiveLinkColor = [System.Drawing.Color]::White
+    $viewAllLink.VisitedLinkColor = $colAccent
+    $viewAllLink.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+    $viewAllLink.Add_LinkClicked({ try { & $script:SwitchPageFn "Alerts" } catch {} })
+    $statusPage.Controls.Add($viewAllLink)
+
     $script:RecentList = New-Object System.Windows.Forms.ListView
     $recentList = $script:RecentList
     $recentList.Name = "recentList"
-    $recentList.Location = New-Object System.Drawing.Point(25, 368)
-    $recentList.Size = New-Object System.Drawing.Size(770, 300)
+    $recentList.Location = New-Object System.Drawing.Point(25, 498)
+    $recentList.Size = New-Object System.Drawing.Size(770, 170)
     $recentList.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
     Style-ListView $recentList
     [void]$recentList.Columns.Add("Time", 120)
@@ -971,6 +1162,7 @@ function Show-Dashboard {
     # Filter logic
     $script:ApplyFilterFn = {
         try {
+            if (-not $script:AlertListView -or -not $script:AlertCountLabel) { return }
             $keyword = $script:SearchBox.Text.Trim().ToLower()
             $sevSel = $script:SevFilter.SelectedItem
             $catSel = $script:CatFilter.SelectedItem
@@ -1255,7 +1447,10 @@ function Show-Dashboard {
                 $senderCb = $this
                 $cfgKey = $senderCb.Tag
                 $script:NotifyConfig | Add-Member -MemberType NoteProperty -Name $cfgKey -Value $senderCb.Checked -Force
-                $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $script:ConfigFilePath -Encoding UTF8
+                # Skip individual writes during batch operations (Select All / Deselect All)
+                if (-not $script:SuppressSettingsSave) {
+                    $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $script:ConfigFilePath -Encoding UTF8
+                }
             } catch {}
         })
 
@@ -1271,7 +1466,12 @@ function Show-Dashboard {
     $selAllBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
     $selAllBtn.ForeColor = $colTextMain
     $selAllBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $selAllBtn.Add_Click({ foreach ($c in $script:SettingsCheckboxes.Values) { $c.Checked = $true } })
+    $selAllBtn.Add_Click({
+        $script:SuppressSettingsSave = $true
+        foreach ($c in $script:SettingsCheckboxes.Values) { $c.Checked = $true }
+        $script:SuppressSettingsSave = $false
+        $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $script:ConfigFilePath -Encoding UTF8
+    })
     $settingsPage.Controls.Add($selAllBtn)
 
     $deselAllBtn = New-Object System.Windows.Forms.Button
@@ -1282,7 +1482,12 @@ function Show-Dashboard {
     $deselAllBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
     $deselAllBtn.ForeColor = $colTextMain
     $deselAllBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $deselAllBtn.Add_Click({ foreach ($c in $script:SettingsCheckboxes.Values) { $c.Checked = $false } })
+    $deselAllBtn.Add_Click({
+        $script:SuppressSettingsSave = $true
+        foreach ($c in $script:SettingsCheckboxes.Values) { $c.Checked = $false }
+        $script:SuppressSettingsSave = $false
+        $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $script:ConfigFilePath -Encoding UTF8
+    })
     $settingsPage.Controls.Add($deselAllBtn)
 
     $savedLabel = New-Object System.Windows.Forms.Label
@@ -1340,7 +1545,7 @@ function Show-Dashboard {
 
         $openBtn = New-Object System.Windows.Forms.Button
         $openBtn.Text = "Open"
-        $openBtn.Location = New-Object System.Drawing.Point(610, 12)
+        $openBtn.Location = New-Object System.Drawing.Point(($logCard.Width - 160), 12)
         $openBtn.Size = New-Object System.Drawing.Size(70, 32)
         $openBtn.FlatStyle = "Flat"
         $openBtn.BackColor = $colAccentDim
@@ -1348,12 +1553,18 @@ function Show-Dashboard {
         $openBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
         $openBtn.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
         $openBtn.Tag = $lf.File
-        $openBtn.Add_Click({ if ($this.Tag -and (Test-Path $this.Tag)) { Start-Process notepad.exe $this.Tag } })
+        $openBtn.Add_Click({
+            if ($this.Tag -and (Test-Path $this.Tag)) {
+                Start-Process notepad.exe $this.Tag
+            } else {
+                [System.Windows.Forms.MessageBox]::Show("Log file has not been created yet.`nIt will appear after the first monitoring cycle generates data.`n`nExpected path:`n$($this.Tag)", "File Not Found", "OK", "Information")
+            }
+        })
         $logCard.Controls.Add($openBtn)
 
         $folderBtn = New-Object System.Windows.Forms.Button
         $folderBtn.Text = "Folder"
-        $folderBtn.Location = New-Object System.Drawing.Point(690, 12)
+        $folderBtn.Location = New-Object System.Drawing.Point(($logCard.Width - 80), 12)
         $folderBtn.Size = New-Object System.Drawing.Size(70, 32)
         $folderBtn.FlatStyle = "Flat"
         $folderBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
@@ -1408,7 +1619,13 @@ function Show-Dashboard {
         $blOpenBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
         $blOpenBtn.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
         $blOpenBtn.Tag = $bl.File
-        $blOpenBtn.Add_Click({ if ($this.Tag -and (Test-Path $this.Tag)) { Start-Process notepad.exe $this.Tag } })
+        $blOpenBtn.Add_Click({
+            if ($this.Tag -and (Test-Path $this.Tag)) {
+                Start-Process notepad.exe $this.Tag
+            } else {
+                [System.Windows.Forms.MessageBox]::Show("Baseline file has not been created yet.`nIt will appear after the first monitoring cycle.`n`nExpected path:`n$($this.Tag)", "File Not Found", "OK", "Information")
+            }
+        })
         $blCard.Controls.Add($blOpenBtn)
 
         $ly += 50
@@ -1426,6 +1643,9 @@ function Show-Dashboard {
                 $up = (Get-Date) - $script:StartTime
                 $script:LblUptime.Text = "{0:D2}h {1:D2}m" -f [int]$up.TotalHours, $up.Minutes
                 & $script:UpdateAlertsListFn
+
+                # Update scan count
+                try { if ($script:ScanCountLabel) { $script:ScanCountLabel.Text = "$($script:MonitorCycle)" } } catch {}
 
                 # Update CPU/RAM/Disk gauges
                 try {
@@ -1449,13 +1669,104 @@ function Show-Dashboard {
                         else { $gauge.G.Fill.BackColor = $colGreen }
                     }
                 } catch {}
+
+                # Update Security Posture indicators
+                try {
+                    $colGreenSp = [System.Drawing.Color]::FromArgb(0, 200, 100)
+                    $colRedSp   = [System.Drawing.Color]::FromArgb(255, 60, 60)
+                    $colGraySp  = [System.Drawing.Color]::FromArgb(80, 80, 80)
+
+                    # Defender
+                    try {
+                        $defStatus = Get-MpComputerStatus -ErrorAction SilentlyContinue
+                        if ($defStatus -and $defStatus.AntivirusEnabled) {
+                            $script:SecPostureDots["Defender"].BackColor = $colGreenSp
+                            $script:SecPostureLabels["Defender"].Text = "Defender: ON"
+                            $script:SecPostureLabels["Defender"].ForeColor = $colGreenSp
+                        } else {
+                            $script:SecPostureDots["Defender"].BackColor = $colRedSp
+                            $script:SecPostureLabels["Defender"].Text = "Defender: OFF"
+                            $script:SecPostureLabels["Defender"].ForeColor = $colRedSp
+                        }
+                    } catch {
+                        $script:SecPostureDots["Defender"].BackColor = $colGraySp
+                        $script:SecPostureLabels["Defender"].Text = "Defender: N/A"
+                    }
+
+                    # Firewall
+                    try {
+                        $fwProfiles = Get-NetFirewallProfile -ErrorAction SilentlyContinue
+                        $allEnabled = ($fwProfiles | Where-Object { $_.Enabled }).Count -eq $fwProfiles.Count
+                        if ($allEnabled) {
+                            $script:SecPostureDots["Firewall"].BackColor = $colGreenSp
+                            $script:SecPostureLabels["Firewall"].Text = "Firewall: ON"
+                            $script:SecPostureLabels["Firewall"].ForeColor = $colGreenSp
+                        } else {
+                            $script:SecPostureDots["Firewall"].BackColor = $colRedSp
+                            $script:SecPostureLabels["Firewall"].Text = "Firewall: PARTIAL"
+                            $script:SecPostureLabels["Firewall"].ForeColor = $colRedSp
+                        }
+                    } catch {
+                        $script:SecPostureDots["Firewall"].BackColor = $colGraySp
+                        $script:SecPostureLabels["Firewall"].Text = "Firewall: N/A"
+                    }
+
+                    # UAC
+                    try {
+                        $uacVal = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -ErrorAction SilentlyContinue).EnableLUA
+                        if ($uacVal -eq 1) {
+                            $script:SecPostureDots["UAC"].BackColor = $colGreenSp
+                            $script:SecPostureLabels["UAC"].Text = "UAC: Enabled"
+                            $script:SecPostureLabels["UAC"].ForeColor = $colGreenSp
+                        } else {
+                            $script:SecPostureDots["UAC"].BackColor = $colRedSp
+                            $script:SecPostureLabels["UAC"].Text = "UAC: DISABLED"
+                            $script:SecPostureLabels["UAC"].ForeColor = $colRedSp
+                        }
+                    } catch {}
+
+                    # RDP
+                    try {
+                        $rdpVal = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -ErrorAction SilentlyContinue).fDenyTSConnections
+                        if ($rdpVal -eq 1) {
+                            $script:SecPostureDots["RDP"].BackColor = $colGreenSp
+                            $script:SecPostureLabels["RDP"].Text = "RDP: Disabled"
+                            $script:SecPostureLabels["RDP"].ForeColor = $colGreenSp
+                        } else {
+                            $script:SecPostureDots["RDP"].BackColor = $colRedSp
+                            $script:SecPostureLabels["RDP"].Text = "RDP: ENABLED"
+                            $script:SecPostureLabels["RDP"].ForeColor = $colRedSp
+                        }
+                    } catch {}
+                } catch {}
+
+                # Update Network Activity summary
+                try {
+                    $netConns = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+                        Where-Object { $_.RemoteAddress -notmatch '^(127\.|0\.|::1|::$)' }
+                    $totalConns = if ($netConns) { $netConns.Count } else { 0 }
+                    $topProcs = $netConns | Group-Object -Property OwningProcess |
+                        Sort-Object Count -Descending | Select-Object -First 5 |
+                        ForEach-Object {
+                            $pName = (Get-Process -Id $_.Name -ErrorAction SilentlyContinue).ProcessName
+                            if (-not $pName) { $pName = "PID:$($_.Name)" }
+                            "$pName($($_.Count))"
+                        }
+                    $topStr = if ($topProcs) { $topProcs -join "  |  " } else { "None" }
+                    $script:NetActivityLabel.Text = "Active: $totalConns connections   Top: $topStr"
+                } catch {}
             }
         } catch {}
     })
     $script:DashTimer.Start()
 
-    # Open default tab
-    & $script:SwitchPageFn $OpenTab
+    # Set open tab BEFORE the Shown event fires
+    $script:DashboardOpenTab = $OpenTab
+
+    # Open default tab AFTER form is shown (ensures rendering works)
+    $form.Add_Shown({
+        try { & $script:SwitchPageFn $script:DashboardOpenTab } catch {}
+    })
 
     $form.Show()
 }
@@ -1567,9 +1878,62 @@ function Initialize-TrayIcon {
     Add-Type -AssemblyName System.Drawing
 
     $script:TrayIcon = New-Object System.Windows.Forms.NotifyIcon
-    $script:TrayIcon.Icon = [System.Drawing.SystemIcons]::Shield
-    $script:TrayIcon.Text = "SecurityMonitor - Double-click to open Dashboard"
+
+    # Create a custom bright shield icon for better tray visibility
+    try {
+        $bmp = New-Object System.Drawing.Bitmap(32, 32)
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $g.Clear([System.Drawing.Color]::Transparent)
+        # Shield shape
+        $shieldPoints = @(
+            (New-Object System.Drawing.Point(16, 2)),
+            (New-Object System.Drawing.Point(28, 6)),
+            (New-Object System.Drawing.Point(28, 16)),
+            (New-Object System.Drawing.Point(16, 30)),
+            (New-Object System.Drawing.Point(4, 16)),
+            (New-Object System.Drawing.Point(4, 6))
+        )
+        $g.FillPolygon((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 180, 255))), $shieldPoints)
+        # Inner highlight
+        $innerPoints = @(
+            (New-Object System.Drawing.Point(16, 6)),
+            (New-Object System.Drawing.Point(24, 9)),
+            (New-Object System.Drawing.Point(24, 15)),
+            (New-Object System.Drawing.Point(16, 26)),
+            (New-Object System.Drawing.Point(8, 15)),
+            (New-Object System.Drawing.Point(8, 9))
+        )
+        $g.FillPolygon((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(0, 120, 200))), $innerPoints)
+        # Check mark
+        $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 3)
+        $g.DrawLine($pen, 10, 16, 14, 21)
+        $g.DrawLine($pen, 14, 21, 22, 11)
+        $pen.Dispose()
+        $g.Dispose()
+        $hIcon = $bmp.GetHicon()
+        $script:TrayIcon.Icon = [System.Drawing.Icon]::FromHandle($hIcon)
+        # Keep bitmap alive — disposing can invalidate icon handle on some .NET versions
+        $script:TrayIconBmp = $bmp
+    } catch {
+        $script:TrayIcon.Icon = [System.Drawing.SystemIcons]::Shield
+    }
+
+    $script:TrayIcon.Text = "SecurityMonitor v7.0"
     $script:TrayIcon.Visible = $true
+
+    # Force tray icon to appear on first run — toggle visibility after message pump starts
+    $refreshTimer = New-Object System.Windows.Forms.Timer
+    $refreshTimer.Interval = 500
+    $refreshTimer.Add_Tick({
+        $this.Stop()
+        $this.Dispose()
+        try {
+            $script:TrayIcon.Visible = $false
+            $script:TrayIcon.Visible = $true
+        } catch {}
+    })
+    $refreshTimer.Start()
 
     # DOUBLE CLICK on tray icon → open Dashboard
     $script:TrayIcon.Add_MouseDoubleClick({
@@ -1589,21 +1953,21 @@ function Initialize-TrayIcon {
     $dashItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Dashboard")
     $dashItem.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
     $dashItem.Add_Click({ try { Show-Dashboard } catch { Write-Host "[!] Dashboard error: $_" -ForegroundColor Red } })
-    $contextMenu.Items.Add($dashItem) | Out-Null
+    [void]$contextMenu.Items.Add($dashItem)
 
     $alertsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Alerts")
     $alertsItem.Add_Click({ try { Show-Dashboard -OpenTab "Alerts" } catch {} })
-    $contextMenu.Items.Add($alertsItem) | Out-Null
+    [void]$contextMenu.Items.Add($alertsItem)
 
     $settingsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Settings")
     $settingsItem.Add_Click({ try { Show-Dashboard -OpenTab "Settings" } catch {} })
-    $contextMenu.Items.Add($settingsItem) | Out-Null
+    [void]$contextMenu.Items.Add($settingsItem)
 
     $logsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Logs")
     $logsItem.Add_Click({ try { Show-Dashboard -OpenTab "Logs" } catch {} })
-    $contextMenu.Items.Add($logsItem) | Out-Null
+    [void]$contextMenu.Items.Add($logsItem)
 
-    $contextMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+    [void]$contextMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 
     $exitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Stop Monitoring")
     $exitItem.ForeColor = [System.Drawing.Color]::FromArgb(255, 80, 80)
@@ -1616,7 +1980,7 @@ function Initialize-TrayIcon {
         }
         [System.Windows.Forms.Application]::ExitThread()
     })
-    $contextMenu.Items.Add($exitItem) | Out-Null
+    [void]$contextMenu.Items.Add($exitItem)
 
     $script:TrayIcon.ContextMenuStrip = $contextMenu
 
@@ -2430,8 +2794,8 @@ function Start-Monitoring {
     Write-Ok "Monitoring active. Press Ctrl+C to stop."
     Write-Host "-----------------------------------------------------------" -ForegroundColor DarkGray
 
-    $cycle = 0
-    $fwCheckInterval = 30
+    $script:MonitorCycle = 0
+    $script:FwCheckInterval = 30
     $script:MonitoringRunning = $true
 
     # Use a Forms Timer for monitoring so UI never blocks
@@ -2440,7 +2804,7 @@ function Start-Monitoring {
     $monitorTimer.Add_Tick({
         try {
             $monitorTimer.Stop()
-            $cycle++
+            $script:MonitorCycle++
             $ts = Get-Date -Format "HH:mm:ss"
 
             Watch-Connections
@@ -2451,7 +2815,7 @@ function Start-Monitoring {
             Watch-RegistryTampering
             Watch-HostsFile
 
-            if ($cycle % $fwCheckInterval -eq 0) {
+            if ($script:MonitorCycle % $script:FwCheckInterval -eq 0) {
                 Write-Status "[$ts] Running firmware integrity check..."
                 $fwChanges = Compare-FirmwareBaseline
                 if ($fwChanges -and $fwChanges.Count -gt 0) {
@@ -2479,7 +2843,7 @@ function Start-Monitoring {
                 }
             }
 
-            if ($cycle % 6 -eq 0) {
+            if ($script:MonitorCycle % 6 -eq 0) {
                 $uptime = (Get-Date) - $script:StartTime
                 $uptimeStr = "{0:D2}h {1:D2}m {2:D2}s" -f $uptime.Hours, $uptime.Minutes, $uptime.Seconds
                 Write-Host "[$ts] Uptime: $uptimeStr | Alerts: $($script:AlertCount) | Connections: $($script:KnownRemotes.Count) | Processes: $($script:KnownProcesses.Count)" -ForegroundColor DarkGray
@@ -2513,6 +2877,7 @@ try {
         try { $script:DashboardForm.Dispose() } catch {}
     }
     # Clean up timers
+    if ($script:PulseTimer) { try { $script:PulseTimer.Stop(); $script:PulseTimer.Dispose() } catch {} }
     if ($script:DashTimer) { try { $script:DashTimer.Stop(); $script:DashTimer.Dispose() } catch {} }
     Write-Log "=== MONITORING STOPPED === Total alerts: $script:AlertCount" -Level "INFO"
     Write-Host "`nMonitoring stopped. Total alerts: $script:AlertCount" -ForegroundColor Yellow
