@@ -326,6 +326,54 @@ function Show-Dashboard {
     $sidebarSep.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
     $sidebar.Controls.Add($sidebarSep)
 
+    # ── Sidebar collapse/expand toggle ──
+    $script:SidebarExpanded = $true
+    $collapseBtn = New-Object System.Windows.Forms.Button
+    $collapseBtn.Text = "<<"
+    $collapseBtn.Dock = "Bottom"
+    $collapseBtn.Size = New-Object System.Drawing.Size(200, 32)
+    $collapseBtn.FlatStyle = "Flat"
+    $collapseBtn.FlatAppearance.BorderSize = 0
+    $collapseBtn.BackColor = [System.Drawing.Color]::FromArgb(35, 35, 55)
+    $collapseBtn.ForeColor = $colTextDim
+    $collapseBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $collapseBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $collapseBtn.Add_Click({
+        if ($script:SidebarExpanded) {
+            # Collapse
+            $sidebar.Width = 50
+            $logoLabel.Visible = $false
+            $verLabel.Visible = $false
+            $sidebarSep.Visible = $false
+            foreach ($nb in $navButtons) {
+                $nb.Size = New-Object System.Drawing.Size(34, 34)
+                $nb.Location = New-Object System.Drawing.Point(8, $nb.Location.Y)
+                $nb.Text = $nb.Tag.Substring(0,1)
+                $nb.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+            }
+            $collapseBtn.Text = ">>"
+            $script:SidebarExpanded = $false
+        } else {
+            # Expand
+            $sidebar.Width = 200
+            $logoLabel.Visible = $true
+            $verLabel.Visible = $true
+            $sidebarSep.Visible = $true
+            $navIdx = 0
+            $navTexts = @("[S]   Status", "[A]   Alerts", "[C]   Settings", "[L]   Logs")
+            foreach ($nb in $navButtons) {
+                $nb.Size = New-Object System.Drawing.Size(184, 40)
+                $nb.Location = New-Object System.Drawing.Point(8, $nb.Location.Y)
+                $nb.Text = $navTexts[$navIdx]
+                $nb.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+                $navIdx++
+            }
+            $collapseBtn.Text = "<<"
+            $script:SidebarExpanded = $true
+        }
+    })
+    $sidebar.Controls.Add($collapseBtn)
+
     # ── Content area (right side) ──
     $contentPanel = New-Object System.Windows.Forms.Panel
     $contentPanel.Location = New-Object System.Drawing.Point(200, 0)
@@ -663,43 +711,42 @@ function Show-Dashboard {
     # Track how many alerts we've already rendered
     $script:RenderedAlertCount = 0
 
-    # Incremental refresh - only add NEW alerts since last render
-    function Update-AlertsList {
-        $total = $script:AlertHistory.Count
-        if ($total -eq $script:RenderedAlertCount) { return }
+    # Incremental refresh - only add NEW alerts since last render (script scope for timer access)
+    $script:UpdateAlertsListFn = {
+        try {
+            $total = $script:AlertHistory.Count
+            if ($total -eq $script:RenderedAlertCount) { return }
 
-        # Add only new items (from RenderedAlertCount to total-1)
-        for ($i = $script:RenderedAlertCount; $i -lt $total; $i++) {
-            $a = $script:AlertHistory[$i]
-            $itemColor = $colTextMain
-            if ($a.Category -eq "Connection") { $itemColor = $colOrange }
-            elseif ($a.Category -eq "Process")  { $itemColor = $colRed }
-            elseif ($a.Category -eq "Firmware") { $itemColor = [System.Drawing.Color]::FromArgb(255, 80, 80) }
+            for ($i = $script:RenderedAlertCount; $i -lt $total; $i++) {
+                $a = $script:AlertHistory[$i]
+                $itemColor = [System.Drawing.Color]::White
+                if ($a.Category -eq "Connection") { $itemColor = [System.Drawing.Color]::FromArgb(255, 160, 40) }
+                elseif ($a.Category -eq "Process")  { $itemColor = [System.Drawing.Color]::FromArgb(220, 50, 60) }
+                elseif ($a.Category -eq "Firmware") { $itemColor = [System.Drawing.Color]::FromArgb(255, 80, 80) }
 
-            # Insert at top of alert list (newest first)
-            $item = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
-            $item.SubItems.Add($a.Category) | Out-Null
-            $item.SubItems.Add($a.Title) | Out-Null
-            $item.SubItems.Add($a.Message) | Out-Null
-            $item.Tag = $i
-            $item.ForeColor = $itemColor
-            $alertListView.Items.Insert(0, $item) | Out-Null
+                $item = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
+                [void]$item.SubItems.Add($a.Category)
+                [void]$item.SubItems.Add($a.Title)
+                [void]$item.SubItems.Add($a.Message)
+                $item.Tag = $i
+                $item.ForeColor = $itemColor
+                [void]$alertListView.Items.Insert(0, $item)
 
-            # Insert at top of recent list (keep max 10)
-            $r = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
-            $r.SubItems.Add($a.Category) | Out-Null
-            $r.SubItems.Add($a.Title) | Out-Null
-            $r.SubItems.Add($a.Message) | Out-Null
-            $r.Tag = $i
-            $r.ForeColor = $itemColor
-            $recentList.Items.Insert(0, $r) | Out-Null
-            while ($recentList.Items.Count -gt 10) {
-                $recentList.Items.RemoveAt($recentList.Items.Count - 1)
+                $r = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
+                [void]$r.SubItems.Add($a.Category)
+                [void]$r.SubItems.Add($a.Title)
+                [void]$r.SubItems.Add($a.Message)
+                $r.Tag = $i
+                $r.ForeColor = $itemColor
+                [void]$recentList.Items.Insert(0, $r)
+                while ($recentList.Items.Count -gt 10) {
+                    $recentList.Items.RemoveAt($recentList.Items.Count - 1)
+                }
             }
-        }
-        $script:RenderedAlertCount = $total
-        $alertCountLabel.Text = "$total alerts"
-        $lblAlerts.Text = "$($script:AlertCount)"
+            $script:RenderedAlertCount = $total
+            $alertCountLabel.Text = "$total alerts"
+            $lblAlerts.Text = "$($script:AlertCount)"
+        } catch {}
     }
 
     # ═══════════════════════════════════════════════════════════════
@@ -774,15 +821,16 @@ function Show-Dashboard {
         $descLbl.ForeColor = $colTextDim
         $card.Controls.Add($descLbl)
 
-        # Instant save on toggle
-        $capturedKey = $opt.Key
-        $capturedCb = $cb
+        # Instant save on toggle - use Tag to store the config key
+        $cb.Tag = $opt.Key
         $cb.Add_CheckedChanged({
             try {
-                $script:NotifyConfig | Add-Member -MemberType NoteProperty -Name $capturedKey -Value $capturedCb.Checked -Force
+                $senderCb = $this
+                $cfgKey = $senderCb.Tag
+                $script:NotifyConfig | Add-Member -MemberType NoteProperty -Name $cfgKey -Value $senderCb.Checked -Force
                 $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $ConfigFile -Encoding UTF8
             } catch {}
-        }.GetNewClosure())
+        })
 
         $sy += 52
     }
@@ -944,7 +992,7 @@ function Show-Dashboard {
                 $lblProcesses.Text = "$($script:KnownProcesses.Count)"
                 $up = (Get-Date) - $script:StartTime
                 $lblUptime.Text = "{0:D2}h {1:D2}m" -f [int]$up.TotalHours, $up.Minutes
-                Update-AlertsList
+                & $script:UpdateAlertsListFn
             }
         } catch {}
     })
