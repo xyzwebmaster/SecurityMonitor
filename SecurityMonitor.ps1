@@ -9,7 +9,7 @@
 .AUTHOR
     SecurityMonitor - Forensic Monitoring
 .VERSION
-    4.0.0
+    5.0.0
 #>
 
 param(
@@ -114,7 +114,7 @@ function Show-ConfigGUI {
 
     # Save button
     $saveBtn = New-Object System.Windows.Forms.Button
-    $saveBtn.Text = "Save && Start Monitoring"
+    $saveBtn.Text = "Save and Start Monitoring"
     $saveBtn.Location = New-Object System.Drawing.Point(280, ($yPos + 10))
     $saveBtn.Size = New-Object System.Drawing.Size(200, 32)
     $saveBtn.FlatStyle = "Flat"
@@ -234,229 +234,801 @@ function Write-Log {
 
 # --- ALERT HISTORY (for GUI detail view) ---
 $script:AlertHistory = [System.Collections.ArrayList]@()
+$script:DashboardForm = $null
 
-# --- ALERT DETAIL GUI ---
-function Show-AlertDetailGUI {
-    param(
-        [hashtable]$AlertData
+# ============================================================================
+#  UNIFIED DASHBOARD GUI - All features in one modern tabbed window
+# ============================================================================
+function Show-Dashboard {
+    param([string]$OpenTab = "Status")
+
+    # If dashboard already open, bring to front
+    if ($script:DashboardForm -and -not $script:DashboardForm.IsDisposed) {
+        $script:DashboardForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
+        $script:DashboardForm.BringToFront()
+        $script:DashboardForm.Activate()
+        return
+    }
+
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    # --- Color palette ---
+    $colBg        = [System.Drawing.Color]::FromArgb(18, 18, 28)
+    $colSidebar   = [System.Drawing.Color]::FromArgb(24, 24, 38)
+    $colCard      = [System.Drawing.Color]::FromArgb(30, 30, 48)
+    $colAccent    = [System.Drawing.Color]::FromArgb(0, 150, 255)
+    $colAccentDim = [System.Drawing.Color]::FromArgb(0, 90, 160)
+    $colRed       = [System.Drawing.Color]::FromArgb(220, 50, 60)
+    $colGreen     = [System.Drawing.Color]::FromArgb(0, 200, 100)
+    $colOrange    = [System.Drawing.Color]::FromArgb(255, 160, 40)
+    $colTextMain  = [System.Drawing.Color]::White
+    $colTextDim   = [System.Drawing.Color]::FromArgb(140, 140, 160)
+    $colBtnHover  = [System.Drawing.Color]::FromArgb(40, 40, 65)
+
+    # --- Main form ---
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "SecurityMonitor Dashboard"
+    $form.Size = New-Object System.Drawing.Size(1050, 680)
+    $form.StartPosition = "CenterScreen"
+    $form.BackColor = $colBg
+    $form.ForeColor = $colTextMain
+    $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $form.MinimumSize = New-Object System.Drawing.Size(1050, 680)
+    $form.FormBorderStyle = "Sizable"
+    $form.TopMost = $true
+
+    # Minimize to tray instead of closing
+    $form.Add_FormClosing({
+        param($s, $e)
+        $e.Cancel = $true
+        $s.Hide()
+    })
+
+    $script:DashboardForm = $form
+
+    # ── Sidebar (left navigation) ──
+    $sidebar = New-Object System.Windows.Forms.Panel
+    $sidebar.Location = New-Object System.Drawing.Point(0, 0)
+    $sidebar.Size = New-Object System.Drawing.Size(200, 680)
+    $sidebar.BackColor = $colSidebar
+    $sidebar.Dock = "Left"
+    $form.Controls.Add($sidebar)
+
+    # Logo / title area
+    $logoLabel = New-Object System.Windows.Forms.Label
+    $logoLabel.Text = "SECURITY`nMONITOR"
+    $logoLabel.Location = New-Object System.Drawing.Point(0, 15)
+    $logoLabel.Size = New-Object System.Drawing.Size(200, 50)
+    $logoLabel.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Bold)
+    $logoLabel.ForeColor = $colAccent
+    $logoLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $sidebar.Controls.Add($logoLabel)
+
+    $verLabel = New-Object System.Windows.Forms.Label
+    $verLabel.Text = "v4.0 Dashboard"
+    $verLabel.Location = New-Object System.Drawing.Point(0, 65)
+    $verLabel.Size = New-Object System.Drawing.Size(200, 18)
+    $verLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $verLabel.ForeColor = $colTextDim
+    $verLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $sidebar.Controls.Add($verLabel)
+
+    # Separator line
+    $sidebarSep = New-Object System.Windows.Forms.Label
+    $sidebarSep.Location = New-Object System.Drawing.Point(15, 90)
+    $sidebarSep.Size = New-Object System.Drawing.Size(170, 1)
+    $sidebarSep.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
+    $sidebar.Controls.Add($sidebarSep)
+
+    # ── Content area (right side) ──
+    $contentPanel = New-Object System.Windows.Forms.Panel
+    $contentPanel.Location = New-Object System.Drawing.Point(200, 0)
+    $contentPanel.Size = New-Object System.Drawing.Size(850, 680)
+    $contentPanel.BackColor = $colBg
+    $contentPanel.Dock = "Fill"
+    $form.Controls.Add($contentPanel)
+
+    # Create page panels (each tab is a Panel that fills contentPanel)
+    $pages = @{}
+    foreach ($pageName in @("Status", "Alerts", "Settings", "Logs")) {
+        $p = New-Object System.Windows.Forms.Panel
+        $p.Dock = "Fill"
+        $p.BackColor = $colBg
+        $p.Visible = $false
+        $p.AutoScroll = $true
+        $contentPanel.Controls.Add($p)
+        $pages[$pageName] = $p
+    }
+
+    # Sidebar nav buttons
+    $navButtons = @()
+    $navItems = @(
+        @{ Name = "Status";   Icon = "[S]"; Text = "  Status" },
+        @{ Name = "Alerts";   Icon = "[A]"; Text = "  Alerts" },
+        @{ Name = "Settings"; Icon = "[C]"; Text = "  Settings" },
+        @{ Name = "Logs";     Icon = "[L]"; Text = "  Logs" }
     )
-    Add-Type -AssemblyName System.Windows.Forms
-    Add-Type -AssemblyName System.Drawing
-
-    $form = New-Object System.Windows.Forms.Form
-    $form.Text = "SecurityMonitor - Alert Details"
-    $form.Size = New-Object System.Drawing.Size(700, 520)
-    $form.StartPosition = "CenterScreen"
-    $form.FormBorderStyle = "FixedDialog"
-    $form.MaximizeBox = $false
-    $form.BackColor = [System.Drawing.Color]::FromArgb(25, 25, 35)
-    $form.ForeColor = [System.Drawing.Color]::White
-    $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-    $form.TopMost = $true
-
-    # Severity color bar
-    $severityPanel = New-Object System.Windows.Forms.Panel
-    $severityPanel.Location = New-Object System.Drawing.Point(0, 0)
-    $severityPanel.Size = New-Object System.Drawing.Size(700, 6)
-    $severityPanel.BackColor = [System.Drawing.Color]::FromArgb(220, 50, 50)
-    $form.Controls.Add($severityPanel)
-
-    # Title
-    $titleLabel = New-Object System.Windows.Forms.Label
-    $titleLabel.Text = $AlertData.Title
-    $titleLabel.Location = New-Object System.Drawing.Point(20, 18)
-    $titleLabel.Size = New-Object System.Drawing.Size(650, 30)
-    $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
-    $titleLabel.ForeColor = [System.Drawing.Color]::FromArgb(255, 80, 80)
-    $form.Controls.Add($titleLabel)
-
-    # Category badge
-    $catLabel = New-Object System.Windows.Forms.Label
-    $catLabel.Text = "Category: $($AlertData.Category)"
-    $catLabel.Location = New-Object System.Drawing.Point(20, 52)
-    $catLabel.Size = New-Object System.Drawing.Size(300, 22)
-    $catLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Italic)
-    $catLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 255)
-    $form.Controls.Add($catLabel)
-
-    # Timestamp
-    $timeLabel = New-Object System.Windows.Forms.Label
-    $timeLabel.Text = "Time: $($AlertData.Timestamp)"
-    $timeLabel.Location = New-Object System.Drawing.Point(350, 52)
-    $timeLabel.Size = New-Object System.Drawing.Size(320, 22)
-    $timeLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-    $timeLabel.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 180)
-    $timeLabel.TextAlign = [System.Drawing.ContentAlignment]::TopRight
-    $form.Controls.Add($timeLabel)
-
-    # Separator
-    $sep = New-Object System.Windows.Forms.Label
-    $sep.Location = New-Object System.Drawing.Point(20, 78)
-    $sep.Size = New-Object System.Drawing.Size(650, 2)
-    $sep.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
-    $form.Controls.Add($sep)
-
-    # Detail panel with scroll
-    $detailPanel = New-Object System.Windows.Forms.Panel
-    $detailPanel.Location = New-Object System.Drawing.Point(20, 90)
-    $detailPanel.Size = New-Object System.Drawing.Size(650, 300)
-    $detailPanel.AutoScroll = $true
-    $detailPanel.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 42)
-    $form.Controls.Add($detailPanel)
-
-    $yOffset = 10
-    foreach ($key in $AlertData.Details.Keys) {
-        $keyLabel = New-Object System.Windows.Forms.Label
-        $keyLabel.Text = "${key}:"
-        $keyLabel.Location = New-Object System.Drawing.Point(10, $yOffset)
-        $keyLabel.Size = New-Object System.Drawing.Size(150, 22)
-        $keyLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-        $keyLabel.ForeColor = [System.Drawing.Color]::FromArgb(120, 180, 255)
-        $detailPanel.Controls.Add($keyLabel)
-
-        $valLabel = New-Object System.Windows.Forms.Label
-        $valLabel.Text = "$($AlertData.Details[$key])"
-        $valLabel.Location = New-Object System.Drawing.Point(165, $yOffset)
-        $valLabel.Size = New-Object System.Drawing.Size(460, 22)
-        $valLabel.Font = New-Object System.Drawing.Font("Consolas", 9)
-        $valLabel.ForeColor = [System.Drawing.Color]::White
-        $detailPanel.Controls.Add($valLabel)
-
-        $yOffset += 28
+    $navY = 105
+    foreach ($nav in $navItems) {
+        $btn = New-Object System.Windows.Forms.Button
+        $btn.Text = "$($nav.Icon) $($nav.Text)"
+        $btn.Location = New-Object System.Drawing.Point(8, $navY)
+        $btn.Size = New-Object System.Drawing.Size(184, 40)
+        $btn.FlatStyle = "Flat"
+        $btn.FlatAppearance.BorderSize = 0
+        $btn.FlatAppearance.MouseOverBackColor = $colBtnHover
+        $btn.BackColor = $colSidebar
+        $btn.ForeColor = $colTextDim
+        $btn.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+        $btn.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+        $btn.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $btn.Tag = $nav.Name
+        $sidebar.Controls.Add($btn)
+        $navButtons += $btn
+        $navY += 44
     }
 
-    # --- Clickable action buttons at the bottom ---
-    $btnY = 400
-
-    # If this is a connection alert, add IP lookup button
-    if ($AlertData.Category -eq "Connection" -and $AlertData.RemoteIP) {
-        $ipBtn = New-Object System.Windows.Forms.Button
-        $ipBtn.Text = "Lookup IP on ipinfo.io ($($AlertData.RemoteIP))"
-        $ipBtn.Location = New-Object System.Drawing.Point(20, $btnY)
-        $ipBtn.Size = New-Object System.Drawing.Size(320, 36)
-        $ipBtn.FlatStyle = "Flat"
-        $ipBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 130, 200)
-        $ipBtn.ForeColor = [System.Drawing.Color]::White
-        $ipBtn.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-        $ipBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-        $capturedIP = $AlertData.RemoteIP
-        $ipBtn.Add_Click({ Start-Process "https://ipinfo.io/$capturedIP" })
-        $form.Controls.Add($ipBtn)
-    }
-
-    # Open log file button
-    $logBtn = New-Object System.Windows.Forms.Button
-    $logBtn.Text = "Open Alert Log"
-    $logBtn.Location = New-Object System.Drawing.Point(360, $btnY)
-    $logBtn.Size = New-Object System.Drawing.Size(150, 36)
-    $logBtn.FlatStyle = "Flat"
-    $logBtn.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
-    $logBtn.ForeColor = [System.Drawing.Color]::White
-    $logBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-    $logBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $capturedLogFile = $AlertFile
-    $logBtn.Add_Click({ if (Test-Path $capturedLogFile) { Start-Process notepad.exe $capturedLogFile } })
-    $form.Controls.Add($logBtn)
-
-    # Close button
-    $closeBtn = New-Object System.Windows.Forms.Button
-    $closeBtn.Text = "Dismiss"
-    $closeBtn.Location = New-Object System.Drawing.Point(520, $btnY)
-    $closeBtn.Size = New-Object System.Drawing.Size(150, 36)
-    $closeBtn.FlatStyle = "Flat"
-    $closeBtn.BackColor = [System.Drawing.Color]::FromArgb(80, 30, 30)
-    $closeBtn.ForeColor = [System.Drawing.Color]::White
-    $closeBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-    $closeBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $closeBtn.Add_Click({ $form.Close() })
-    $form.Controls.Add($closeBtn)
-
-    # Show all alerts button
-    $allAlertsBtn = New-Object System.Windows.Forms.Button
-    $allAlertsBtn.Text = "View All Alerts ($($script:AlertHistory.Count))"
-    $allAlertsBtn.Location = New-Object System.Drawing.Point(20, ($btnY + 42))
-    $allAlertsBtn.Size = New-Object System.Drawing.Size(650, 30)
-    $allAlertsBtn.FlatStyle = "Flat"
-    $allAlertsBtn.BackColor = [System.Drawing.Color]::FromArgb(45, 45, 60)
-    $allAlertsBtn.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 200)
-    $allAlertsBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-    $allAlertsBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $allAlertsBtn.Add_Click({ Show-AllAlertsGUI })
-    $form.Controls.Add($allAlertsBtn)
-
-    $form.ShowDialog() | Out-Null
-}
-
-# --- ALL ALERTS HISTORY GUI ---
-function Show-AllAlertsGUI {
-    Add-Type -AssemblyName System.Windows.Forms
-    Add-Type -AssemblyName System.Drawing
-
-    $form = New-Object System.Windows.Forms.Form
-    $form.Text = "SecurityMonitor - Alert History"
-    $form.Size = New-Object System.Drawing.Size(900, 600)
-    $form.StartPosition = "CenterScreen"
-    $form.BackColor = [System.Drawing.Color]::FromArgb(25, 25, 35)
-    $form.ForeColor = [System.Drawing.Color]::White
-    $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-    $form.TopMost = $true
-
-    $titleLabel = New-Object System.Windows.Forms.Label
-    $titleLabel.Text = "Alert History - Click any row for details"
-    $titleLabel.Location = New-Object System.Drawing.Point(15, 10)
-    $titleLabel.Size = New-Object System.Drawing.Size(860, 28)
-    $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
-    $titleLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 255)
-    $form.Controls.Add($titleLabel)
-
-    $listView = New-Object System.Windows.Forms.ListView
-    $listView.Location = New-Object System.Drawing.Point(15, 45)
-    $listView.Size = New-Object System.Drawing.Size(855, 460)
-    $listView.View = "Details"
-    $listView.FullRowSelect = $true
-    $listView.GridLines = $true
-    $listView.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 42)
-    $listView.ForeColor = [System.Drawing.Color]::White
-    $listView.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $listView.Columns.Add("Time", 140) | Out-Null
-    $listView.Columns.Add("Category", 100) | Out-Null
-    $listView.Columns.Add("Title", 200) | Out-Null
-    $listView.Columns.Add("Message", 400) | Out-Null
-
-    for ($i = $script:AlertHistory.Count - 1; $i -ge 0; $i--) {
-        $a = $script:AlertHistory[$i]
-        $item = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
-        $item.SubItems.Add($a.Category) | Out-Null
-        $item.SubItems.Add($a.Title) | Out-Null
-        $item.SubItems.Add($a.Message) | Out-Null
-        $item.Tag = $i
-        if ($a.Category -eq "Connection") {
-            $item.ForeColor = [System.Drawing.Color]::FromArgb(255, 160, 50)
+    # Navigation switching logic
+    $switchPage = {
+        param($targetName)
+        foreach ($pKey in $pages.Keys) { $pages[$pKey].Visible = ($pKey -eq $targetName) }
+        foreach ($b in $navButtons) {
+            if ($b.Tag -eq $targetName) {
+                $b.BackColor = $colAccentDim
+                $b.ForeColor = $colTextMain
+                $b.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+            } else {
+                $b.BackColor = $colSidebar
+                $b.ForeColor = $colTextDim
+                $b.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+            }
         }
-        $listView.Items.Add($item) | Out-Null
+        # Refresh alerts list when switching to Alerts tab
+        if ($targetName -eq "Alerts") { Update-AlertsList }
     }
 
-    $listView.Add_DoubleClick({
-        $sel = $listView.SelectedItems
+    foreach ($b in $navButtons) {
+        $capturedBtn = $b
+        $b.Add_Click({ & $switchPage $capturedBtn.Tag })
+    }
+
+    # ═══════════════════════════════════════════════════════════════
+    #  PAGE 1: STATUS (live overview)
+    # ═══════════════════════════════════════════════════════════════
+    $statusPage = $pages["Status"]
+
+    $statusTitle = New-Object System.Windows.Forms.Label
+    $statusTitle.Text = "Live Monitoring Status"
+    $statusTitle.Location = New-Object System.Drawing.Point(25, 18)
+    $statusTitle.Size = New-Object System.Drawing.Size(500, 32)
+    $statusTitle.Font = New-Object System.Drawing.Font("Segoe UI", 15, [System.Drawing.FontStyle]::Bold)
+    $statusTitle.ForeColor = $colAccent
+    $statusPage.Controls.Add($statusTitle)
+
+    # Status indicator
+    $statusDot = New-Object System.Windows.Forms.Label
+    $statusDot.Text = "MONITORING ACTIVE"
+    $statusDot.Location = New-Object System.Drawing.Point(540, 22)
+    $statusDot.Size = New-Object System.Drawing.Size(250, 24)
+    $statusDot.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $statusDot.ForeColor = $colGreen
+    $statusDot.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+    $statusPage.Controls.Add($statusDot)
+
+    # Stat cards
+    function New-StatCard {
+        param($parent, $x, $y, $label, $valueVar)
+        $card = New-Object System.Windows.Forms.Panel
+        $card.Location = New-Object System.Drawing.Point($x, $y)
+        $card.Size = New-Object System.Drawing.Size(185, 90)
+        $card.BackColor = $colCard
+        $parent.Controls.Add($card)
+
+        $lbl = New-Object System.Windows.Forms.Label
+        $lbl.Text = $label
+        $lbl.Location = New-Object System.Drawing.Point(12, 8)
+        $lbl.Size = New-Object System.Drawing.Size(165, 20)
+        $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+        $lbl.ForeColor = $colTextDim
+        $card.Controls.Add($lbl)
+
+        $val = New-Object System.Windows.Forms.Label
+        $val.Text = "0"
+        $val.Name = $valueVar
+        $val.Location = New-Object System.Drawing.Point(12, 30)
+        $val.Size = New-Object System.Drawing.Size(165, 50)
+        $val.Font = New-Object System.Drawing.Font("Segoe UI", 24, [System.Drawing.FontStyle]::Bold)
+        $val.ForeColor = $colTextMain
+        $card.Controls.Add($val)
+        return $val
+    }
+
+    $lblAlerts      = New-StatCard $statusPage 25  65  "Total Alerts"         "valAlerts"
+    $lblConnections = New-StatCard $statusPage 220 65  "Active Connections"   "valConns"
+    $lblProcesses   = New-StatCard $statusPage 415 65  "Tracked Processes"    "valProcs"
+    $lblUptime      = New-StatCard $statusPage 610 65  "Uptime"               "valUptime"
+    $lblUptime.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+
+    # Computer info
+    $infoBox = New-Object System.Windows.Forms.Panel
+    $infoBox.Location = New-Object System.Drawing.Point(25, 170)
+    $infoBox.Size = New-Object System.Drawing.Size(770, 75)
+    $infoBox.BackColor = $colCard
+    $statusPage.Controls.Add($infoBox)
+
+    $infoItems = @(
+        @{ L = "Computer";  V = $env:COMPUTERNAME; X = 15 },
+        @{ L = "User";      V = $env:USERNAME;     X = 210 },
+        @{ L = "Interval";  V = "${IntervalSeconds}s"; X = 405 },
+        @{ L = "Log Dir";   V = $LogDir;           X = 540 }
+    )
+    foreach ($ii in $infoItems) {
+        $il = New-Object System.Windows.Forms.Label
+        $il.Text = $ii.L
+        $il.Location = New-Object System.Drawing.Point($ii.X, 10)
+        $il.Size = New-Object System.Drawing.Size(180, 18)
+        $il.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+        $il.ForeColor = $colTextDim
+        $infoBox.Controls.Add($il)
+
+        $iv = New-Object System.Windows.Forms.Label
+        $iv.Text = $ii.V
+        $iv.Location = New-Object System.Drawing.Point($ii.X, 30)
+        $iv.Size = New-Object System.Drawing.Size(180, 30)
+        $iv.Font = New-Object System.Drawing.Font("Consolas", 10, [System.Drawing.FontStyle]::Bold)
+        $iv.ForeColor = $colTextMain
+        $infoBox.Controls.Add($iv)
+    }
+
+    # Recent alerts preview on status page
+    $recentLabel = New-Object System.Windows.Forms.Label
+    $recentLabel.Text = "Recent Alerts"
+    $recentLabel.Location = New-Object System.Drawing.Point(25, 260)
+    $recentLabel.Size = New-Object System.Drawing.Size(300, 24)
+    $recentLabel.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+    $recentLabel.ForeColor = $colOrange
+    $statusPage.Controls.Add($recentLabel)
+
+    $recentList = New-Object System.Windows.Forms.ListView
+    $recentList.Name = "recentList"
+    $recentList.Location = New-Object System.Drawing.Point(25, 288)
+    $recentList.Size = New-Object System.Drawing.Size(770, 300)
+    $recentList.View = "Details"
+    $recentList.FullRowSelect = $true
+    $recentList.GridLines = $true
+    $recentList.BackColor = $colCard
+    $recentList.ForeColor = $colTextMain
+    $recentList.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $recentList.Columns.Add("Time", 130) | Out-Null
+    $recentList.Columns.Add("Category", 90) | Out-Null
+    $recentList.Columns.Add("Title", 180) | Out-Null
+    $recentList.Columns.Add("Message", 360) | Out-Null
+    $recentList.Add_DoubleClick({
+        $sel = $recentList.SelectedItems
         if ($sel.Count -gt 0) {
             $idx = $sel[0].Tag
-            $alertData = $script:AlertHistory[$idx]
-            Show-AlertDetailGUI -AlertData $alertData
+            $ad = $script:AlertHistory[$idx]
+            Show-AlertDetail -AlertData $ad -ParentForm $form
+        }
+    })
+    $statusPage.Controls.Add($recentList)
+
+    # ═══════════════════════════════════════════════════════════════
+    #  PAGE 2: ALERTS (full history + detail panel)
+    # ═══════════════════════════════════════════════════════════════
+    $alertsPage = $pages["Alerts"]
+
+    $alertsTitle = New-Object System.Windows.Forms.Label
+    $alertsTitle.Text = "Alert History"
+    $alertsTitle.Location = New-Object System.Drawing.Point(25, 18)
+    $alertsTitle.Size = New-Object System.Drawing.Size(300, 32)
+    $alertsTitle.Font = New-Object System.Drawing.Font("Segoe UI", 15, [System.Drawing.FontStyle]::Bold)
+    $alertsTitle.ForeColor = $colRed
+    $alertsPage.Controls.Add($alertsTitle)
+
+    $alertCountLabel = New-Object System.Windows.Forms.Label
+    $alertCountLabel.Name = "alertCountLabel"
+    $alertCountLabel.Text = "0 alerts"
+    $alertCountLabel.Location = New-Object System.Drawing.Point(540, 22)
+    $alertCountLabel.Size = New-Object System.Drawing.Size(250, 24)
+    $alertCountLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $alertCountLabel.ForeColor = $colTextDim
+    $alertCountLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+    $alertsPage.Controls.Add($alertCountLabel)
+
+    # Full alert list
+    $alertListView = New-Object System.Windows.Forms.ListView
+    $alertListView.Name = "alertListView"
+    $alertListView.Location = New-Object System.Drawing.Point(25, 58)
+    $alertListView.Size = New-Object System.Drawing.Size(770, 290)
+    $alertListView.View = "Details"
+    $alertListView.FullRowSelect = $true
+    $alertListView.GridLines = $true
+    $alertListView.BackColor = $colCard
+    $alertListView.ForeColor = $colTextMain
+    $alertListView.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $alertListView.Columns.Add("Time", 130) | Out-Null
+    $alertListView.Columns.Add("Category", 90) | Out-Null
+    $alertListView.Columns.Add("Title", 180) | Out-Null
+    $alertListView.Columns.Add("Message", 360) | Out-Null
+    $alertsPage.Controls.Add($alertListView)
+
+    # Detail panel below the list
+    $detailBox = New-Object System.Windows.Forms.Panel
+    $detailBox.Name = "detailBox"
+    $detailBox.Location = New-Object System.Drawing.Point(25, 358)
+    $detailBox.Size = New-Object System.Drawing.Size(770, 230)
+    $detailBox.BackColor = $colCard
+    $detailBox.AutoScroll = $true
+    $alertsPage.Controls.Add($detailBox)
+
+    $detailTitle = New-Object System.Windows.Forms.Label
+    $detailTitle.Name = "detailTitle"
+    $detailTitle.Text = "Select an alert to view details"
+    $detailTitle.Location = New-Object System.Drawing.Point(15, 10)
+    $detailTitle.Size = New-Object System.Drawing.Size(550, 26)
+    $detailTitle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+    $detailTitle.ForeColor = $colTextDim
+    $detailBox.Controls.Add($detailTitle)
+
+    $detailContent = New-Object System.Windows.Forms.Panel
+    $detailContent.Name = "detailContent"
+    $detailContent.Location = New-Object System.Drawing.Point(15, 40)
+    $detailContent.Size = New-Object System.Drawing.Size(730, 130)
+    $detailContent.BackColor = $colCard
+    $detailContent.AutoScroll = $true
+    $detailBox.Controls.Add($detailContent)
+
+    # IP Lookup button (hidden until connection alert selected)
+    $ipLookupBtn = New-Object System.Windows.Forms.Button
+    $ipLookupBtn.Name = "ipLookupBtn"
+    $ipLookupBtn.Text = "Lookup IP on ipinfo.io"
+    $ipLookupBtn.Location = New-Object System.Drawing.Point(15, 180)
+    $ipLookupBtn.Size = New-Object System.Drawing.Size(280, 34)
+    $ipLookupBtn.FlatStyle = "Flat"
+    $ipLookupBtn.BackColor = $colAccent
+    $ipLookupBtn.ForeColor = $colTextMain
+    $ipLookupBtn.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $ipLookupBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $ipLookupBtn.Visible = $false
+    $ipLookupBtn.Tag = ""
+    $ipLookupBtn.Add_Click({ if ($ipLookupBtn.Tag) { Start-Process "https://ipinfo.io/$($ipLookupBtn.Tag)" } })
+    $detailBox.Controls.Add($ipLookupBtn)
+
+    # Open log button
+    $openLogBtn = New-Object System.Windows.Forms.Button
+    $openLogBtn.Text = "Open Alert Log"
+    $openLogBtn.Location = New-Object System.Drawing.Point(310, 180)
+    $openLogBtn.Size = New-Object System.Drawing.Size(160, 34)
+    $openLogBtn.FlatStyle = "Flat"
+    $openLogBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
+    $openLogBtn.ForeColor = $colTextMain
+    $openLogBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $openLogBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $openLogBtn.Add_Click({ if (Test-Path $AlertFile) { Start-Process notepad.exe $AlertFile } })
+    $detailBox.Controls.Add($openLogBtn)
+
+    # Click on alert row → populate detail panel
+    $alertListView.Add_SelectedIndexChanged({
+        $sel = $alertListView.SelectedItems
+        if ($sel.Count -eq 0) { return }
+        $idx = $sel[0].Tag
+        $ad = $script:AlertHistory[$idx]
+
+        $detailTitle.Text = $ad.Title
+        $detailTitle.ForeColor = $colRed
+
+        $detailContent.Controls.Clear()
+        $dy = 0
+        foreach ($key in $ad.Details.Keys) {
+            $kl = New-Object System.Windows.Forms.Label
+            $kl.Text = "${key}:"
+            $kl.Location = New-Object System.Drawing.Point(0, $dy)
+            $kl.Size = New-Object System.Drawing.Size(140, 20)
+            $kl.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+            $kl.ForeColor = [System.Drawing.Color]::FromArgb(100, 160, 255)
+            $detailContent.Controls.Add($kl)
+
+            $vl = New-Object System.Windows.Forms.Label
+            $vl.Text = "$($ad.Details[$key])"
+            $vl.Location = New-Object System.Drawing.Point(145, $dy)
+            $vl.Size = New-Object System.Drawing.Size(560, 20)
+            $vl.Font = New-Object System.Drawing.Font("Consolas", 9)
+            $vl.ForeColor = $colTextMain
+            $detailContent.Controls.Add($vl)
+            $dy += 24
+        }
+
+        # Show/hide IP lookup button
+        if ($ad.RemoteIP) {
+            $ipLookupBtn.Text = "Lookup $($ad.RemoteIP) on ipinfo.io"
+            $ipLookupBtn.Tag = $ad.RemoteIP
+            $ipLookupBtn.Visible = $true
+        } else {
+            $ipLookupBtn.Visible = $false
         }
     })
 
-    $form.Controls.Add($listView)
+    # Refresh function for alerts list
+    $script:UpdateAlertsList = {
+        $alertListView.Items.Clear()
+        $recentList.Items.Clear()
+        for ($i = $script:AlertHistory.Count - 1; $i -ge 0; $i--) {
+            $a = $script:AlertHistory[$i]
+            $item = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
+            $item.SubItems.Add($a.Category) | Out-Null
+            $item.SubItems.Add($a.Title) | Out-Null
+            $item.SubItems.Add($a.Message) | Out-Null
+            $item.Tag = $i
+            if ($a.Category -eq "Connection") { $item.ForeColor = $colOrange }
+            elseif ($a.Category -eq "Process")  { $item.ForeColor = $colRed }
+            elseif ($a.Category -eq "Firmware") { $item.ForeColor = [System.Drawing.Color]::FromArgb(255, 80, 80) }
+            $alertListView.Items.Add($item) | Out-Null
 
-    # IP lookup hint
-    $hintLabel = New-Object System.Windows.Forms.Label
-    $hintLabel.Text = "Double-click any alert to see details. Connection alerts include IP lookup on ipinfo.io"
-    $hintLabel.Location = New-Object System.Drawing.Point(15, 515)
-    $hintLabel.Size = New-Object System.Drawing.Size(860, 22)
-    $hintLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-    $hintLabel.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 140)
-    $form.Controls.Add($hintLabel)
+            # Also add to recent (max 10)
+            if ($recentList.Items.Count -lt 10) {
+                $r = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
+                $r.SubItems.Add($a.Category) | Out-Null
+                $r.SubItems.Add($a.Title) | Out-Null
+                $r.SubItems.Add($a.Message) | Out-Null
+                $r.Tag = $i
+                if ($a.Category -eq "Connection") { $r.ForeColor = $colOrange }
+                $recentList.Items.Add($r) | Out-Null
+            }
+        }
+        $alertCountLabel.Text = "$($script:AlertHistory.Count) alerts"
+        $lblAlerts.Text = "$($script:AlertCount)"
+    }
 
-    $form.ShowDialog() | Out-Null
+    function Update-AlertsList { & $script:UpdateAlertsList }
+
+    # ═══════════════════════════════════════════════════════════════
+    #  PAGE 3: SETTINGS (notification preferences - live edit)
+    # ═══════════════════════════════════════════════════════════════
+    $settingsPage = $pages["Settings"]
+
+    $settingsTitle = New-Object System.Windows.Forms.Label
+    $settingsTitle.Text = "Notification Settings"
+    $settingsTitle.Location = New-Object System.Drawing.Point(25, 18)
+    $settingsTitle.Size = New-Object System.Drawing.Size(400, 32)
+    $settingsTitle.Font = New-Object System.Drawing.Font("Segoe UI", 15, [System.Drawing.FontStyle]::Bold)
+    $settingsTitle.ForeColor = $colAccent
+    $settingsPage.Controls.Add($settingsTitle)
+
+    $settingsDesc = New-Object System.Windows.Forms.Label
+    $settingsDesc.Text = "Enable or disable notification categories. Changes are saved instantly."
+    $settingsDesc.Location = New-Object System.Drawing.Point(25, 52)
+    $settingsDesc.Size = New-Object System.Drawing.Size(700, 22)
+    $settingsDesc.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $settingsDesc.ForeColor = $colTextDim
+    $settingsPage.Controls.Add($settingsDesc)
+
+    $options = @(
+        @{ Key = "Firmware";   Label = "Firmware Integrity Changes";   Desc = "Driver/firmware file hash modifications, deletions, new files (.sys, .efi, .rom, .bin)";     Icon = "[FW]" },
+        @{ Key = "Driver";     Label = "Driver Changes";               Desc = "New drivers loaded or existing drivers removed from the system";                              Icon = "[DR]" },
+        @{ Key = "Service";    Label = "New Services";                 Desc = "Newly installed or registered Windows services";                                              Icon = "[SV]" },
+        @{ Key = "Connection"; Label = "Unknown Network Connections";  Desc = "Outbound connections from unrecognized/unwhitelisted processes";                               Icon = "[CN]" },
+        @{ Key = "Process";    Label = "Unsigned Processes";           Desc = "New processes running without a valid digital signature";                                      Icon = "[PR]" },
+        @{ Key = "Listener";   Label = "New Listening Ports";          Desc = "New ports opened for incoming connections by non-system processes";                            Icon = "[LP]" },
+        @{ Key = "Registry";   Label = "Registry Startup Key Changes"; Desc = "Modifications to Run/RunOnce registry keys used for persistence";                             Icon = "[RG]" },
+        @{ Key = "Security";   Label = "Security Events";             Desc = "Remote logons, failed login attempts, new user accounts, new services in Event Log";           Icon = "[SE]" },
+        @{ Key = "RDP";        Label = "Remote Desktop (RDP) Status"; Desc = "Alert when Remote Desktop is enabled on this machine";                                        Icon = "[RD]" },
+        @{ Key = "Hosts";      Label = "Hosts File Modifications";    Desc = "Changes to the hosts file that could redirect DNS queries";                                   Icon = "[HF]" }
+    )
+
+    $settingsCheckboxes = @{}
+    $sy = 85
+    foreach ($opt in $options) {
+        $card = New-Object System.Windows.Forms.Panel
+        $card.Location = New-Object System.Drawing.Point(25, $sy)
+        $card.Size = New-Object System.Drawing.Size(770, 48)
+        $card.BackColor = $colCard
+        $settingsPage.Controls.Add($card)
+
+        $iconLbl = New-Object System.Windows.Forms.Label
+        $iconLbl.Text = $opt.Icon
+        $iconLbl.Location = New-Object System.Drawing.Point(10, 5)
+        $iconLbl.Size = New-Object System.Drawing.Size(40, 20)
+        $iconLbl.Font = New-Object System.Drawing.Font("Consolas", 9, [System.Drawing.FontStyle]::Bold)
+        $iconLbl.ForeColor = $colAccent
+        $card.Controls.Add($iconLbl)
+
+        $cb = New-Object System.Windows.Forms.CheckBox
+        $cb.Text = $opt.Label
+        $cb.Location = New-Object System.Drawing.Point(55, 4)
+        $cb.Size = New-Object System.Drawing.Size(350, 22)
+        $cb.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+        $cb.ForeColor = $colTextMain
+        $cb.BackColor = $colCard
+        # Load current config value
+        $propVal = $script:NotifyConfig.PSObject.Properties[$opt.Key]
+        $cb.Checked = if ($null -eq $propVal) { $true } else { $propVal.Value -eq $true }
+        $card.Controls.Add($cb)
+        $settingsCheckboxes[$opt.Key] = $cb
+
+        $descLbl = New-Object System.Windows.Forms.Label
+        $descLbl.Text = $opt.Desc
+        $descLbl.Location = New-Object System.Drawing.Point(55, 27)
+        $descLbl.Size = New-Object System.Drawing.Size(700, 17)
+        $descLbl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+        $descLbl.ForeColor = $colTextDim
+        $card.Controls.Add($descLbl)
+
+        # Instant save on toggle
+        $capturedKey = $opt.Key
+        $capturedCb = $cb
+        $cb.Add_CheckedChanged({
+            $script:NotifyConfig | Add-Member -MemberType NoteProperty -Name $capturedKey -Value $capturedCb.Checked -Force
+            $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $ConfigFile -Encoding UTF8
+        })
+
+        $sy += 52
+    }
+
+    # Select All / Deselect All buttons
+    $selAllBtn = New-Object System.Windows.Forms.Button
+    $selAllBtn.Text = "Select All"
+    $selAllBtn.Location = New-Object System.Drawing.Point(25, ($sy + 10))
+    $selAllBtn.Size = New-Object System.Drawing.Size(120, 34)
+    $selAllBtn.FlatStyle = "Flat"
+    $selAllBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
+    $selAllBtn.ForeColor = $colTextMain
+    $selAllBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $selAllBtn.Add_Click({ foreach ($c in $settingsCheckboxes.Values) { $c.Checked = $true } })
+    $settingsPage.Controls.Add($selAllBtn)
+
+    $deselAllBtn = New-Object System.Windows.Forms.Button
+    $deselAllBtn.Text = "Deselect All"
+    $deselAllBtn.Location = New-Object System.Drawing.Point(155, ($sy + 10))
+    $deselAllBtn.Size = New-Object System.Drawing.Size(120, 34)
+    $deselAllBtn.FlatStyle = "Flat"
+    $deselAllBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
+    $deselAllBtn.ForeColor = $colTextMain
+    $deselAllBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $deselAllBtn.Add_Click({ foreach ($c in $settingsCheckboxes.Values) { $c.Checked = $false } })
+    $settingsPage.Controls.Add($deselAllBtn)
+
+    $savedLabel = New-Object System.Windows.Forms.Label
+    $savedLabel.Text = "Settings are saved automatically"
+    $savedLabel.Location = New-Object System.Drawing.Point(290, ($sy + 16))
+    $savedLabel.Size = New-Object System.Drawing.Size(300, 20)
+    $savedLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Italic)
+    $savedLabel.ForeColor = $colGreen
+    $settingsPage.Controls.Add($savedLabel)
+
+    # ═══════════════════════════════════════════════════════════════
+    #  PAGE 4: LOGS (open/view log files)
+    # ═══════════════════════════════════════════════════════════════
+    $logsPage = $pages["Logs"]
+
+    $logsTitle = New-Object System.Windows.Forms.Label
+    $logsTitle.Text = "Log Files"
+    $logsTitle.Location = New-Object System.Drawing.Point(25, 18)
+    $logsTitle.Size = New-Object System.Drawing.Size(300, 32)
+    $logsTitle.Font = New-Object System.Drawing.Font("Segoe UI", 15, [System.Drawing.FontStyle]::Bold)
+    $logsTitle.ForeColor = $colAccent
+    $logsPage.Controls.Add($logsTitle)
+
+    $logFiles = @(
+        @{ Label = "Alert Log";       File = $AlertFile;      Desc = "All security alerts generated during this session" },
+        @{ Label = "Monitor Log";     File = $LogFile;        Desc = "General monitoring events and status messages" },
+        @{ Label = "Connection Log";  File = $ConnectionLog;  Desc = "All network connection events (new/terminated)" },
+        @{ Label = "Process Log";     File = $ProcessLog;     Desc = "Process creation and termination tracking" }
+    )
+
+    $ly = 65
+    foreach ($lf in $logFiles) {
+        $logCard = New-Object System.Windows.Forms.Panel
+        $logCard.Location = New-Object System.Drawing.Point(25, $ly)
+        $logCard.Size = New-Object System.Drawing.Size(770, 60)
+        $logCard.BackColor = $colCard
+        $logsPage.Controls.Add($logCard)
+
+        $lfLabel = New-Object System.Windows.Forms.Label
+        $lfLabel.Text = $lf.Label
+        $lfLabel.Location = New-Object System.Drawing.Point(15, 8)
+        $lfLabel.Size = New-Object System.Drawing.Size(250, 22)
+        $lfLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+        $lfLabel.ForeColor = $colTextMain
+        $logCard.Controls.Add($lfLabel)
+
+        $lfDesc = New-Object System.Windows.Forms.Label
+        $lfDesc.Text = $lf.Desc
+        $lfDesc.Location = New-Object System.Drawing.Point(15, 32)
+        $lfDesc.Size = New-Object System.Drawing.Size(500, 18)
+        $lfDesc.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+        $lfDesc.ForeColor = $colTextDim
+        $logCard.Controls.Add($lfDesc)
+
+        $openBtn = New-Object System.Windows.Forms.Button
+        $openBtn.Text = "Open"
+        $openBtn.Location = New-Object System.Drawing.Point(610, 12)
+        $openBtn.Size = New-Object System.Drawing.Size(70, 32)
+        $openBtn.FlatStyle = "Flat"
+        $openBtn.BackColor = $colAccentDim
+        $openBtn.ForeColor = $colTextMain
+        $openBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $capturedFile = $lf.File
+        $openBtn.Add_Click({ if (Test-Path $capturedFile) { Start-Process notepad.exe $capturedFile } })
+        $logCard.Controls.Add($openBtn)
+
+        $folderBtn = New-Object System.Windows.Forms.Button
+        $folderBtn.Text = "Folder"
+        $folderBtn.Location = New-Object System.Drawing.Point(690, 12)
+        $folderBtn.Size = New-Object System.Drawing.Size(70, 32)
+        $folderBtn.FlatStyle = "Flat"
+        $folderBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
+        $folderBtn.ForeColor = $colTextMain
+        $folderBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $folderBtn.Add_Click({ Start-Process explorer.exe $LogDir })
+        $logCard.Controls.Add($folderBtn)
+
+        $ly += 68
+    }
+
+    # Baselines section
+    $blTitle = New-Object System.Windows.Forms.Label
+    $blTitle.Text = "Baselines"
+    $blTitle.Location = New-Object System.Drawing.Point(25, ($ly + 15))
+    $blTitle.Size = New-Object System.Drawing.Size(300, 28)
+    $blTitle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+    $blTitle.ForeColor = $colOrange
+    $logsPage.Controls.Add($blTitle)
+    $ly += 48
+
+    $baselineFiles = @(
+        @{ Label = "Firmware Baseline"; File = $FirmwareBaseline },
+        @{ Label = "Driver Baseline";   File = $DriverBaseline },
+        @{ Label = "Service Baseline";  File = $ServiceBaseline }
+    )
+    foreach ($bl in $baselineFiles) {
+        $blCard = New-Object System.Windows.Forms.Panel
+        $blCard.Location = New-Object System.Drawing.Point(25, $ly)
+        $blCard.Size = New-Object System.Drawing.Size(770, 44)
+        $blCard.BackColor = $colCard
+        $logsPage.Controls.Add($blCard)
+
+        $blLabel = New-Object System.Windows.Forms.Label
+        $blLabel.Text = $bl.Label
+        $blLabel.Location = New-Object System.Drawing.Point(15, 10)
+        $blLabel.Size = New-Object System.Drawing.Size(250, 22)
+        $blLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+        $blLabel.ForeColor = $colTextMain
+        $blCard.Controls.Add($blLabel)
+
+        $blOpenBtn = New-Object System.Windows.Forms.Button
+        $blOpenBtn.Text = "View"
+        $blOpenBtn.Location = New-Object System.Drawing.Point(690, 6)
+        $blOpenBtn.Size = New-Object System.Drawing.Size(70, 30)
+        $blOpenBtn.FlatStyle = "Flat"
+        $blOpenBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
+        $blOpenBtn.ForeColor = $colTextMain
+        $blOpenBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $capturedBl = $bl.File
+        $blOpenBtn.Add_Click({ if (Test-Path $capturedBl) { Start-Process notepad.exe $capturedBl } })
+        $blCard.Controls.Add($blOpenBtn)
+
+        $ly += 50
+    }
+
+    # ── Status updater timer ──
+    $script:DashTimer = New-Object System.Windows.Forms.Timer
+    $script:DashTimer.Interval = 3000
+    $script:DashTimer.Add_Tick({
+        if ($form.Visible) {
+            $lblAlerts.Text = "$($script:AlertCount)"
+            $lblConnections.Text = "$($script:KnownRemotes.Count)"
+            $lblProcesses.Text = "$($script:KnownProcesses.Count)"
+            $up = (Get-Date) - $script:StartTime
+            $lblUptime.Text = "{0:D2}h {1:D2}m" -f [int]$up.TotalHours, $up.Minutes
+            Update-AlertsList
+        }
+    })
+    $script:DashTimer.Start()
+
+    # Open default tab
+    & $switchPage $OpenTab
+
+    $form.Show()
+}
+
+# ── Alert detail popup (called from dashboard double-click) ──
+function Show-AlertDetail {
+    param([hashtable]$AlertData, $ParentForm)
+
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "Alert: $($AlertData.Title)"
+    $dlg.Size = New-Object System.Drawing.Size(600, 420)
+    $dlg.StartPosition = "CenterParent"
+    $dlg.BackColor = [System.Drawing.Color]::FromArgb(25, 25, 38)
+    $dlg.ForeColor = [System.Drawing.Color]::White
+    $dlg.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $dlg.FormBorderStyle = "FixedDialog"
+    $dlg.MaximizeBox = $false
+    $dlg.TopMost = $true
+
+    # Red top bar
+    $bar = New-Object System.Windows.Forms.Panel
+    $bar.Dock = "Top"
+    $bar.Size = New-Object System.Drawing.Size(600, 5)
+    $bar.BackColor = [System.Drawing.Color]::FromArgb(220, 50, 60)
+    $dlg.Controls.Add($bar)
+
+    $tl = New-Object System.Windows.Forms.Label
+    $tl.Text = $AlertData.Title
+    $tl.Location = New-Object System.Drawing.Point(18, 14)
+    $tl.Size = New-Object System.Drawing.Size(560, 28)
+    $tl.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Bold)
+    $tl.ForeColor = [System.Drawing.Color]::FromArgb(255, 80, 80)
+    $dlg.Controls.Add($tl)
+
+    $catTime = New-Object System.Windows.Forms.Label
+    $catTime.Text = "$($AlertData.Category)  |  $($AlertData.Timestamp)"
+    $catTime.Location = New-Object System.Drawing.Point(18, 44)
+    $catTime.Size = New-Object System.Drawing.Size(560, 20)
+    $catTime.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $catTime.ForeColor = [System.Drawing.Color]::FromArgb(0, 180, 240)
+    $dlg.Controls.Add($catTime)
+
+    $dp = New-Object System.Windows.Forms.Panel
+    $dp.Location = New-Object System.Drawing.Point(18, 72)
+    $dp.Size = New-Object System.Drawing.Size(555, 250)
+    $dp.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 46)
+    $dp.AutoScroll = $true
+    $dlg.Controls.Add($dp)
+
+    $dy = 8
+    foreach ($key in $AlertData.Details.Keys) {
+        $kl = New-Object System.Windows.Forms.Label
+        $kl.Text = "${key}:"
+        $kl.Location = New-Object System.Drawing.Point(8, $dy)
+        $kl.Size = New-Object System.Drawing.Size(130, 20)
+        $kl.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $kl.ForeColor = [System.Drawing.Color]::FromArgb(100, 160, 255)
+        $dp.Controls.Add($kl)
+
+        $vl = New-Object System.Windows.Forms.Label
+        $vl.Text = "$($AlertData.Details[$key])"
+        $vl.Location = New-Object System.Drawing.Point(142, $dy)
+        $vl.Size = New-Object System.Drawing.Size(400, 20)
+        $vl.Font = New-Object System.Drawing.Font("Consolas", 9)
+        $vl.ForeColor = [System.Drawing.Color]::White
+        $dp.Controls.Add($vl)
+        $dy += 24
+    }
+
+    # Buttons
+    if ($AlertData.RemoteIP) {
+        $ib = New-Object System.Windows.Forms.Button
+        $ib.Text = "Lookup $($AlertData.RemoteIP) on ipinfo.io"
+        $ib.Location = New-Object System.Drawing.Point(18, 335)
+        $ib.Size = New-Object System.Drawing.Size(300, 34)
+        $ib.FlatStyle = "Flat"
+        $ib.BackColor = [System.Drawing.Color]::FromArgb(0, 130, 200)
+        $ib.ForeColor = [System.Drawing.Color]::White
+        $ib.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+        $ib.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $capturedIP = $AlertData.RemoteIP
+        $ib.Add_Click({ Start-Process "https://ipinfo.io/$capturedIP" })
+        $dlg.Controls.Add($ib)
+    }
+
+    $cb = New-Object System.Windows.Forms.Button
+    $cb.Text = "Close"
+    $cb.Location = New-Object System.Drawing.Point(480, 335)
+    $cb.Size = New-Object System.Drawing.Size(90, 34)
+    $cb.FlatStyle = "Flat"
+    $cb.BackColor = [System.Drawing.Color]::FromArgb(70, 30, 30)
+    $cb.ForeColor = [System.Drawing.Color]::White
+    $cb.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $cb.Add_Click({ $dlg.Close() })
+    $dlg.Controls.Add($cb)
+
+    $dlg.ShowDialog() | Out-Null
 }
 
 # --- SYSTEM TRAY ICON ---
@@ -469,22 +1041,45 @@ function Initialize-TrayIcon {
 
     $script:TrayIcon = New-Object System.Windows.Forms.NotifyIcon
     $script:TrayIcon.Icon = [System.Drawing.SystemIcons]::Shield
-    $script:TrayIcon.Text = "SecurityMonitor - Active"
+    $script:TrayIcon.Text = "SecurityMonitor - Click to open Dashboard"
     $script:TrayIcon.Visible = $true
 
-    # Context menu
-    $contextMenu = New-Object System.Windows.Forms.ContextMenuStrip
-    $viewAlerts = New-Object System.Windows.Forms.ToolStripMenuItem("View All Alerts")
-    $viewAlerts.Add_Click({ Show-AllAlertsGUI })
-    $contextMenu.Items.Add($viewAlerts) | Out-Null
+    # LEFT CLICK on tray icon → open Dashboard
+    $script:TrayIcon.Add_Click({
+        param($s, $e)
+        if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+            Show-Dashboard
+        }
+    })
 
-    $openLogs = New-Object System.Windows.Forms.ToolStripMenuItem("Open Log Folder")
-    $openLogs.Add_Click({ Start-Process explorer.exe $LogDir })
-    $contextMenu.Items.Add($openLogs) | Out-Null
+    # RIGHT CLICK context menu
+    $contextMenu = New-Object System.Windows.Forms.ContextMenuStrip
+    $contextMenu.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 45)
+    $contextMenu.ForeColor = [System.Drawing.Color]::White
+    $contextMenu.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $contextMenu.RenderMode = "System"
+
+    $dashItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Dashboard")
+    $dashItem.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $dashItem.Add_Click({ Show-Dashboard })
+    $contextMenu.Items.Add($dashItem) | Out-Null
+
+    $alertsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Alerts")
+    $alertsItem.Add_Click({ Show-Dashboard -OpenTab "Alerts" })
+    $contextMenu.Items.Add($alertsItem) | Out-Null
+
+    $settingsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Settings")
+    $settingsItem.Add_Click({ Show-Dashboard -OpenTab "Settings" })
+    $contextMenu.Items.Add($settingsItem) | Out-Null
+
+    $logsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Logs")
+    $logsItem.Add_Click({ Show-Dashboard -OpenTab "Logs" })
+    $contextMenu.Items.Add($logsItem) | Out-Null
 
     $contextMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
     $exitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Stop Monitoring")
+    $exitItem.ForeColor = [System.Drawing.Color]::FromArgb(255, 80, 80)
     $exitItem.Add_Click({
         $script:TrayIcon.Visible = $false
         $script:TrayIcon.Dispose()
@@ -494,16 +1089,13 @@ function Initialize-TrayIcon {
 
     $script:TrayIcon.ContextMenuStrip = $contextMenu
 
-    # Click on balloon tip opens the detail GUI
+    # Click on balloon tip: open ipinfo.io for IP + show dashboard alerts tab
     $script:TrayIcon.Add_BalloonTipClicked({
         if ($null -ne $script:LastAlertData) {
-            if ($script:LastAlertData.Category -eq "Connection" -and $script:LastAlertData.RemoteIP) {
-                # Unknown connection: open ipinfo.io directly
+            if ($script:LastAlertData.RemoteIP) {
                 Start-Process "https://ipinfo.io/$($script:LastAlertData.RemoteIP)"
-            } else {
-                # All other alerts: open detail GUI
-                Show-AlertDetailGUI -AlertData $script:LastAlertData
             }
+            Show-Dashboard -OpenTab "Alerts"
         }
     })
 }
@@ -528,7 +1120,7 @@ function Send-ToastNotification {
             $script:TrayIcon.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Warning
             $script:TrayIcon.BalloonTipTitle = "SecurityMonitor: $Title"
             $tipText = $Message
-            if ($AlertData -and $AlertData.Category -eq "Connection" -and $AlertData.RemoteIP) {
+            if ($AlertData -and $AlertData.RemoteIP) {
                 $tipText = "$Message`nClick to lookup IP on ipinfo.io"
             } else {
                 $tipText = "$Message`nClick to view details"
@@ -545,7 +1137,7 @@ function Send-ToastNotification {
         [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
 
         $launchUrl = ""
-        if ($AlertData -and $AlertData.Category -eq "Connection" -and $AlertData.RemoteIP) {
+        if ($AlertData -and $AlertData.RemoteIP) {
             $launchUrl = "https://ipinfo.io/$($AlertData.RemoteIP)"
         }
 
