@@ -296,12 +296,12 @@ function Show-Dashboard {
 
     $script:DashboardForm = $form
 
-    # ── Sidebar (left navigation) ──
+    # ── Sidebar (left navigation) — no Dock, manual position ──
     $sidebar = New-Object System.Windows.Forms.Panel
     $sidebar.Location = New-Object System.Drawing.Point(0, 0)
-    $sidebar.Size = New-Object System.Drawing.Size(200, 680)
+    $sidebar.Size = New-Object System.Drawing.Size(200, $form.ClientSize.Height)
     $sidebar.BackColor = $colSidebar
-    $sidebar.Dock = "Left"
+    $sidebar.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
     $form.Controls.Add($sidebar)
 
     # Logo / title area
@@ -338,8 +338,9 @@ function Show-Dashboard {
     $script:SidebarSep = $sidebarSep
     $collapseBtn = New-Object System.Windows.Forms.Button
     $collapseBtn.Text = "<<"
-    $collapseBtn.Dock = "Bottom"
+    $collapseBtn.Location = New-Object System.Drawing.Point(0, ($form.ClientSize.Height - 32))
     $collapseBtn.Size = New-Object System.Drawing.Size(200, 32)
+    $collapseBtn.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
     $collapseBtn.FlatStyle = "Flat"
     $collapseBtn.FlatAppearance.BorderSize = 0
     $collapseBtn.BackColor = [System.Drawing.Color]::FromArgb(35, 35, 55)
@@ -348,15 +349,16 @@ function Show-Dashboard {
     $collapseBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
     $sidebar.Controls.Add($collapseBtn)
 
-    # ── Content area (right side) ──
+    # ── Content area (right side) — positioned to sidebar's right, resizes with form ──
     $contentPanel = New-Object System.Windows.Forms.Panel
     $contentPanel.BackColor = $colBg
-    $contentPanel.Dock = "Fill"
-    $contentPanel.Padding = New-Object System.Windows.Forms.Padding(0)
+    $contentPanel.Location = New-Object System.Drawing.Point($sidebar.Width, 0)
+    $contentPanel.Size = New-Object System.Drawing.Size(($form.ClientSize.Width - $sidebar.Width), $form.ClientSize.Height)
+    $contentPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
     $form.Controls.Add($contentPanel)
 
-    # Fix dock z-order: sidebar must dock Left BEFORE contentPanel fills remaining space
-    $sidebar.BringToFront()
+    # Store contentPanel in script scope for collapse/expand repositioning
+    $script:ContentPanel = $contentPanel
 
     # Create page panels (each tab is a Panel that fills contentPanel)
     $script:Pages = @{}
@@ -403,6 +405,8 @@ function Show-Dashboard {
     # ── Sidebar collapse click handler (now navButtons is populated) ──
     $collapseBtn.Add_Click({
         try {
+            $formW = $script:DashboardForm.ClientSize.Width
+            $formH = $script:DashboardForm.ClientSize.Height
             if ($script:SidebarExpanded) {
                 $script:SidebarPanel.Width = 50
                 $script:LogoLabel.Visible = $false
@@ -416,6 +420,9 @@ function Show-Dashboard {
                 }
                 $this.Text = ">>"
                 $script:SidebarExpanded = $false
+                # Reposition content panel
+                $script:ContentPanel.Location = New-Object System.Drawing.Point(50, 0)
+                $script:ContentPanel.Size = New-Object System.Drawing.Size(($formW - 50), $formH)
             } else {
                 $script:SidebarPanel.Width = 200
                 $script:LogoLabel.Visible = $true
@@ -432,6 +439,9 @@ function Show-Dashboard {
                 }
                 $this.Text = "<<"
                 $script:SidebarExpanded = $true
+                # Reposition content panel
+                $script:ContentPanel.Location = New-Object System.Drawing.Point(200, 0)
+                $script:ContentPanel.Size = New-Object System.Drawing.Size(($formW - 200), $formH)
             }
         } catch {}
     })
