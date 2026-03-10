@@ -1298,6 +1298,140 @@ function Show-Dashboard {
     })
     $detailBox.Controls.Add($regeditBtn)
 
+    # Block IP button (hidden until connection alert with IP selected)
+    $script:BlockIpBtn = New-Object System.Windows.Forms.Button
+    $blockIpBtn = $script:BlockIpBtn
+    $blockIpBtn.Text = "Block IP (Firewall)"
+    $blockIpBtn.Location = New-Object System.Drawing.Point(15, 220)
+    $blockIpBtn.Size = New-Object System.Drawing.Size(280, 34)
+    $blockIpBtn.FlatStyle = "Flat"
+    $blockIpBtn.BackColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
+    $blockIpBtn.ForeColor = $colTextMain
+    $blockIpBtn.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $blockIpBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $blockIpBtn.Visible = $false
+    $blockIpBtn.Tag = ""
+    $blockIpBtn.Add_Click({
+        if ($this.Tag) {
+            $ip = $this.Tag
+            $ruleName = "SecurityMonitor_Block_$ip"
+            $confirm = [System.Windows.Forms.MessageBox]::Show(
+                "Are you sure you want to block IP address $ip ?`n`nThis will create Windows Firewall rules to block all inbound and outbound traffic from/to this IP.`n`nRule name: $ruleName",
+                "Block IP - Confirm",
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+                try {
+                    $existIn = Get-NetFirewallRule -DisplayName "${ruleName}_In" -ErrorAction SilentlyContinue
+                    if ($existIn) {
+                        [System.Windows.Forms.MessageBox]::Show("IP $ip is already blocked.", "Already Blocked", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                        return
+                    }
+                    New-NetFirewallRule -DisplayName "${ruleName}_In" -Direction Inbound -Action Block -RemoteAddress $ip -Profile Any -ErrorAction Stop | Out-Null
+                    New-NetFirewallRule -DisplayName "${ruleName}_Out" -Direction Outbound -Action Block -RemoteAddress $ip -Profile Any -ErrorAction Stop | Out-Null
+                    $this.Text = "IP Blocked"
+                    $this.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
+                    $this.Enabled = $false
+                    [System.Windows.Forms.MessageBox]::Show("IP $ip has been blocked.`n`nInbound rule: ${ruleName}_In`nOutbound rule: ${ruleName}_Out`n`nTo unblock, delete these rules in Windows Firewall.", "IP Blocked", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                } catch {
+                    [System.Windows.Forms.MessageBox]::Show("Failed to block IP. Run as Administrator.`n`nError: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+                }
+            }
+        }
+    })
+    $detailBox.Controls.Add($blockIpBtn)
+
+    # Restore/Delete Registry button (hidden until registry alert selected)
+    $script:RestoreRegBtn = New-Object System.Windows.Forms.Button
+    $restoreRegBtn = $script:RestoreRegBtn
+    $restoreRegBtn.Text = "Restore Registry"
+    $restoreRegBtn.Location = New-Object System.Drawing.Point(15, 260)
+    $restoreRegBtn.Size = New-Object System.Drawing.Size(280, 34)
+    $restoreRegBtn.FlatStyle = "Flat"
+    $restoreRegBtn.BackColor = [System.Drawing.Color]::FromArgb(30, 130, 60)
+    $restoreRegBtn.ForeColor = $colTextMain
+    $restoreRegBtn.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $restoreRegBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $restoreRegBtn.Visible = $false
+    $restoreRegBtn.Tag = $null
+    $restoreRegBtn.Add_Click({
+        $info = $this.Tag
+        if (-not $info) { return }
+        $regPath   = $info.RegPath
+        $valueName = $info.ValueName
+        $expected  = $info.Expected
+        $action    = $info.Action  # "delete_value", "delete_key", "restore_value", "restore_snapshot"
+
+        $descText = switch ($action) {
+            "delete_key"   { "DELETE the entire registry key:`n$regPath" }
+            "delete_value" { "DELETE the registry value '$valueName' from:`n$regPath" }
+            "restore_value" { "RESTORE the registry value '$valueName' to '$expected' in:`n$regPath" }
+            "restore_snapshot" { "RESTORE the registry key to its baseline snapshot:`n$regPath`n`nThis will remove added entries, restore removed entries, and revert modified values." }
+            default { "Fix the registry at:`n$regPath" }
+        }
+
+        $confirm = [System.Windows.Forms.MessageBox]::Show(
+            "Are you sure you want to $descText`n`nThis action modifies the Windows Registry.",
+            "Restore Registry - Confirm",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+        if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+
+        try {
+            switch ($action) {
+                "delete_key" {
+                    Remove-Item -Path $regPath -Recurse -Force -ErrorAction Stop
+                    [System.Windows.Forms.MessageBox]::Show("Registry key deleted:`n$regPath", "Registry Restored", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                }
+                "delete_value" {
+                    Remove-ItemProperty -Path $regPath -Name $valueName -Force -ErrorAction Stop
+                    [System.Windows.Forms.MessageBox]::Show("Registry value '$valueName' deleted from:`n$regPath", "Registry Restored", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                }
+                "restore_value" {
+                    Set-ItemProperty -Path $regPath -Name $valueName -Value $expected -ErrorAction Stop
+                    [System.Windows.Forms.MessageBox]::Show("Registry value '$valueName' restored to '$expected' in:`n$regPath", "Registry Restored", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                }
+                "restore_snapshot" {
+                    $snapshot = $script:RegistrySnapshotCache[$regPath]
+                    if (-not $snapshot) {
+                        [System.Windows.Forms.MessageBox]::Show("No baseline snapshot available for this key.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+                        return
+                    }
+                    # Get current values
+                    $currentProps = Get-ItemProperty -Path $regPath -ErrorAction Stop
+                    $currentVals = @{}
+                    foreach ($p in $currentProps.PSObject.Properties) {
+                        if ($p.Name -notin @("PSPath","PSParentPath","PSChildName","PSDrive","PSProvider")) {
+                            $currentVals[$p.Name] = $p.Value
+                        }
+                    }
+                    # Remove entries not in snapshot
+                    foreach ($k in $currentVals.Keys) {
+                        if (-not $snapshot.ContainsKey($k)) {
+                            Remove-ItemProperty -Path $regPath -Name $k -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+                    # Restore snapshot values
+                    foreach ($k in $snapshot.Keys) {
+                        Set-ItemProperty -Path $regPath -Name $k -Value $snapshot[$k] -ErrorAction SilentlyContinue
+                    }
+                    # Update baseline hash
+                    $newHash = Get-RegistryHash -KeyPath $regPath
+                    if ($newHash) { $script:RegistryBaseline[$regPath] = $newHash }
+                    [System.Windows.Forms.MessageBox]::Show("Registry key restored to baseline snapshot:`n$regPath", "Registry Restored", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                }
+            }
+            $this.Text = "Restored"
+            $this.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
+            $this.Enabled = $false
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("Failed to modify registry. Run as Administrator.`n`nError: $_", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        }
+    })
+    $detailBox.Controls.Add($restoreRegBtn)
+
     # Click on alert row → populate detail panel with auto-sizing
     $alertListView.Add_SelectedIndexChanged({
         try {
@@ -1352,23 +1486,94 @@ function Show-Dashboard {
             $script:IpLookupBtn.Location = New-Object System.Drawing.Point(15, $btnY)
             $script:OpenLogBtn.Location = New-Object System.Drawing.Point(310, $btnY)
 
-            # Show/hide IP lookup button
+            # Show/hide IP lookup button and Block IP button
             if ($ad.RemoteIP) {
                 $script:IpLookupBtn.Text = "Lookup $($ad.RemoteIP) on ipinfo.io"
                 $script:IpLookupBtn.Tag = "$($ad.RemoteIP)"
                 $script:IpLookupBtn.Visible = $true
+
+                # Check if IP is already blocked
+                $blockRuleName = "SecurityMonitor_Block_$($ad.RemoteIP)_In"
+                $alreadyBlocked = Get-NetFirewallRule -DisplayName $blockRuleName -ErrorAction SilentlyContinue
+                $script:BlockIpBtn.Tag = "$($ad.RemoteIP)"
+                $script:BlockIpBtn.Location = New-Object System.Drawing.Point(15, ($btnY + 42))
+                if ($alreadyBlocked) {
+                    $script:BlockIpBtn.Text = "IP Already Blocked"
+                    $script:BlockIpBtn.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
+                    $script:BlockIpBtn.Enabled = $false
+                } else {
+                    $script:BlockIpBtn.Text = "Block IP (Firewall)"
+                    $script:BlockIpBtn.BackColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
+                    $script:BlockIpBtn.Enabled = $true
+                }
+                $script:BlockIpBtn.Visible = $true
             } else {
                 $script:IpLookupBtn.Visible = $false
+                $script:BlockIpBtn.Visible = $false
             }
 
-            # Show/hide Regedit button for registry alerts
+            # Show/hide Regedit button and Restore Registry button for registry alerts
             $regPath = $ad.Details["Registry Path"]
             if ($regPath) {
                 $script:RegeditBtn.Tag = $regPath
                 $script:RegeditBtn.Visible = $true
                 $script:RegeditBtn.Location = New-Object System.Drawing.Point(485, $btnY)
+
+                # Determine restore action based on alert type
+                $valueName = $ad.Details["Value Name"]
+                $expected  = $ad.Details["Expected Value"]
+                if (-not $expected) { $expected = $ad.Details["Expected"] }
+                $actionType = $null
+                $btnText = "Restore Registry"
+
+                if ($ad.Details["Action"] -match "should NOT exist" -or $ad.Details["Threat"] -match "should NOT exist") {
+                    # Key itself shouldn't exist → delete key
+                    $actionType = "delete_key"
+                    $btnText = "Delete Registry Key"
+                } elseif ($ad.Details["Added Entries"]) {
+                    # Watch-Registry change with before/after → restore snapshot
+                    $actionType = "restore_snapshot"
+                    $btnText = "Restore to Baseline"
+                } elseif ($valueName -and $expected) {
+                    # Tampering alert with known expected value → restore value
+                    $actionType = "restore_value"
+                    $btnText = "Restore to '$expected'"
+                } elseif ($valueName -and ($ad.Category -match "Tamper" -or $ad.Title -match "TAMPER")) {
+                    # Tampering alert where value shouldn't exist → delete value
+                    $badIf = $ad.Details["Current Value"]
+                    if ($ad.Details["Action"] -match "should NOT exist" -or $ad.Details["Threat"] -match "IFEO|hijack|COM hijack") {
+                        $actionType = "delete_value"
+                        $btnText = "Delete '$valueName'"
+                    } elseif ($expected) {
+                        $actionType = "restore_value"
+                        $btnText = "Restore '$valueName'"
+                    } else {
+                        $actionType = "delete_value"
+                        $btnText = "Delete '$valueName'"
+                    }
+                } elseif ($ad.Details["Modified Entries"] -or $ad.Details["Removed Entries"]) {
+                    $actionType = "restore_snapshot"
+                    $btnText = "Restore to Baseline"
+                }
+
+                if ($actionType) {
+                    $script:RestoreRegBtn.Tag = @{
+                        RegPath   = $regPath
+                        ValueName = $valueName
+                        Expected  = $expected
+                        Action    = $actionType
+                    }
+                    $script:RestoreRegBtn.Text = $btnText
+                    $script:RestoreRegBtn.BackColor = [System.Drawing.Color]::FromArgb(30, 130, 60)
+                    $script:RestoreRegBtn.Enabled = $true
+                    $script:RestoreRegBtn.Location = New-Object System.Drawing.Point(485, ($btnY + 42))
+                    $script:RestoreRegBtn.Visible = $true
+                } else {
+                    $script:RestoreRegBtn.Visible = $false
+                }
             } else {
                 $script:RegeditBtn.Visible = $false
+                $script:RestoreRegBtn.Visible = $false
             }
         } catch {}
     })
@@ -3003,13 +3208,30 @@ function Watch-RegistryTampering {
                 $alertKey = "TAMPER:$($check.Path)\$($check.Name)=$val"
                 if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
                     $script:TamperAlerted[$alertKey] = $true
-                    Send-Alert "REGISTRY TAMPERING" $check.Desc -Category "Registry Tampering" -ExtraDetails @{
+                    $extraInfo = @{
                         "Registry Path"  = $check.Path
                         "Value Name"     = $check.Name
                         "Current Value"  = "$val"
                         "Threat"         = $check.Desc
-                        "Action"         = "INVESTIGATE AND REMEDIATE - This may indicate active compromise"
                     }
+                    if ($check.BadIf -eq "exists") {
+                        $extraInfo["Action"] = "This value should NOT exist - delete to remediate"
+                    } else {
+                        # Value exists but has wrong value - provide safe default for restore
+                        $safeDefaults = @{
+                            "0" = "1"   # If bad=0, safe=1 (enable features)
+                            "1" = "0"   # If bad=1, safe=0 (disable bad policies)
+                            "4" = "2"   # If bad=4 (disabled service), safe=2 (auto start)
+                        }
+                        $safeVal = $safeDefaults[$check.BadIf]
+                        if ($safeVal) {
+                            $extraInfo["Expected Value"] = $safeVal
+                            $extraInfo["Action"] = "Restore value to '$safeVal' to remediate"
+                        } else {
+                            $extraInfo["Action"] = "INVESTIGATE AND REMEDIATE - This may indicate active compromise"
+                        }
+                    }
+                    Send-Alert "REGISTRY TAMPERING" $check.Desc -Category "Registry Tampering" -ExtraDetails $extraInfo
                 }
             }
         } catch {}
