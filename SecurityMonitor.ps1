@@ -5,10 +5,11 @@
 .DESCRIPTION
     Continuously monitors network connections, processes, firmware hash integrity,
     driver changes, and security events. Produces timestamped evidence logs.
+    On first run, shows a GUI to let the user choose which alert types to receive.
 .AUTHOR
     SecurityMonitor - Forensic Monitoring
 .VERSION
-    2.0.0
+    3.0.0
 #>
 
 param(
@@ -18,8 +19,149 @@ param(
     [switch]$Silent
 )
 
+# --- NOTIFICATION PREFERENCES GUI ---
+$ConfigFile = Join-Path $PSScriptRoot "notification_config.json"
+
+function Show-ConfigGUI {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "SecurityMonitor - Notification Settings"
+    $form.Size = New-Object System.Drawing.Size(520, 580)
+    $form.StartPosition = "CenterScreen"
+    $form.FormBorderStyle = "FixedDialog"
+    $form.MaximizeBox = $false
+    $form.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+    $form.ForeColor = [System.Drawing.Color]::White
+    $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+
+    # Title label
+    $titleLabel = New-Object System.Windows.Forms.Label
+    $titleLabel.Text = "Choose which changes you want to be notified about:"
+    $titleLabel.Location = New-Object System.Drawing.Point(20, 15)
+    $titleLabel.Size = New-Object System.Drawing.Size(470, 30)
+    $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+    $titleLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 255)
+    $form.Controls.Add($titleLabel)
+
+    $subtitleLabel = New-Object System.Windows.Forms.Label
+    $subtitleLabel.Text = "You will receive a Windows desktop notification for each selected category."
+    $subtitleLabel.Location = New-Object System.Drawing.Point(20, 45)
+    $subtitleLabel.Size = New-Object System.Drawing.Size(470, 25)
+    $subtitleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $subtitleLabel.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 180)
+    $form.Controls.Add($subtitleLabel)
+
+    # Checkbox definitions: key, label, description
+    $options = @(
+        @{ Key = "Firmware";    Label = "Firmware Integrity Changes";        Desc = "Driver/firmware file hash modifications, deletions, new files (.sys, .efi, .rom, .bin)" },
+        @{ Key = "Driver";      Label = "Driver Changes";                    Desc = "New drivers loaded or existing drivers removed from the system" },
+        @{ Key = "Service";     Label = "New Services";                      Desc = "Newly installed or registered Windows services" },
+        @{ Key = "Connection";  Label = "Unknown Network Connections";       Desc = "Outbound connections from unrecognized/unwhitelisted processes" },
+        @{ Key = "Process";     Label = "Unsigned Processes";                Desc = "New processes running without a valid digital signature" },
+        @{ Key = "Listener";    Label = "New Listening Ports";               Desc = "New ports opened for incoming connections by non-system processes" },
+        @{ Key = "Registry";    Label = "Registry Startup Key Changes";      Desc = "Modifications to Run/RunOnce registry keys used for persistence" },
+        @{ Key = "Security";    Label = "Security Events";                   Desc = "Remote logons, failed login attempts, new user accounts, new services in Event Log" },
+        @{ Key = "RDP";         Label = "Remote Desktop (RDP) Status";       Desc = "Alert when Remote Desktop is enabled on this machine" },
+        @{ Key = "Hosts";       Label = "Hosts File Modifications";          Desc = "Changes to the hosts file that could redirect DNS queries" }
+    )
+
+    $checkboxes = @{}
+    $yPos = 80
+    foreach ($opt in $options) {
+        $cb = New-Object System.Windows.Forms.CheckBox
+        $cb.Text = $opt.Label
+        $cb.Location = New-Object System.Drawing.Point(25, $yPos)
+        $cb.Size = New-Object System.Drawing.Size(450, 22)
+        $cb.Checked = $true
+        $cb.ForeColor = [System.Drawing.Color]::White
+        $cb.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+        $form.Controls.Add($cb)
+        $checkboxes[$opt.Key] = $cb
+
+        $descLabel = New-Object System.Windows.Forms.Label
+        $descLabel.Text = $opt.Desc
+        $descLabel.Location = New-Object System.Drawing.Point(45, ($yPos + 22))
+        $descLabel.Size = New-Object System.Drawing.Size(440, 18)
+        $descLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+        $descLabel.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 140)
+        $form.Controls.Add($descLabel)
+
+        $yPos += 44
+    }
+
+    # Select All / Deselect All buttons
+    $selectAllBtn = New-Object System.Windows.Forms.Button
+    $selectAllBtn.Text = "Select All"
+    $selectAllBtn.Location = New-Object System.Drawing.Point(20, ($yPos + 10))
+    $selectAllBtn.Size = New-Object System.Drawing.Size(110, 32)
+    $selectAllBtn.FlatStyle = "Flat"
+    $selectAllBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 50)
+    $selectAllBtn.ForeColor = [System.Drawing.Color]::White
+    $selectAllBtn.Add_Click({ foreach ($cb in $checkboxes.Values) { $cb.Checked = $true } })
+    $form.Controls.Add($selectAllBtn)
+
+    $deselectAllBtn = New-Object System.Windows.Forms.Button
+    $deselectAllBtn.Text = "Deselect All"
+    $deselectAllBtn.Location = New-Object System.Drawing.Point(140, ($yPos + 10))
+    $deselectAllBtn.Size = New-Object System.Drawing.Size(110, 32)
+    $deselectAllBtn.FlatStyle = "Flat"
+    $deselectAllBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 50)
+    $deselectAllBtn.ForeColor = [System.Drawing.Color]::White
+    $deselectAllBtn.Add_Click({ foreach ($cb in $checkboxes.Values) { $cb.Checked = $false } })
+    $form.Controls.Add($deselectAllBtn)
+
+    # Save button
+    $saveBtn = New-Object System.Windows.Forms.Button
+    $saveBtn.Text = "Save && Start Monitoring"
+    $saveBtn.Location = New-Object System.Drawing.Point(280, ($yPos + 10))
+    $saveBtn.Size = New-Object System.Drawing.Size(200, 32)
+    $saveBtn.FlatStyle = "Flat"
+    $saveBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 200)
+    $saveBtn.ForeColor = [System.Drawing.Color]::White
+    $saveBtn.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $saveBtn.Add_Click({ $form.DialogResult = [System.Windows.Forms.DialogResult]::OK; $form.Close() })
+    $form.Controls.Add($saveBtn)
+    $form.AcceptButton = $saveBtn
+
+    $result = $form.ShowDialog()
+
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        $config = @{}
+        foreach ($key in $checkboxes.Keys) {
+            $config[$key] = $checkboxes[$key].Checked
+        }
+        return $config
+    } else {
+        # User closed the window - enable everything by default
+        $config = @{}
+        foreach ($opt in $options) { $config[$opt.Key] = $true }
+        return $config
+    }
+}
+
+# Load or create notification config
+if (Test-Path $ConfigFile) {
+    $script:NotifyConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json
+    Write-Host "[+] Notification preferences loaded from config" -ForegroundColor Green
+} else {
+    Write-Host "[*] First run detected - opening notification settings..." -ForegroundColor Cyan
+    $guiResult = Show-ConfigGUI
+    $guiResult | ConvertTo-Json | Set-Content -Path $ConfigFile -Encoding UTF8
+    $script:NotifyConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json
+    Write-Host "[+] Notification preferences saved" -ForegroundColor Green
+}
+
+# Helper to check if a category is enabled
+function Test-NotifyEnabled {
+    param([string]$Category)
+    $val = $script:NotifyConfig.PSObject.Properties[$Category]
+    if ($null -eq $val) { return $true }
+    return $val.Value -eq $true
+}
+
 # --- AUTO-START REGISTRATION ---
-# When run for the first time, registers itself as a scheduled task to auto-start on Windows boot
 $taskName = "SecurityMonitor"
 $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if (-not $existingTask) {
@@ -98,7 +240,6 @@ function Send-ToastNotification {
         [string]$Severity = "Warning"
     )
     try {
-        # Use Windows 10/11 native toast notifications via AppId
         [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
         [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
 
@@ -121,7 +262,6 @@ function Send-ToastNotification {
         [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
         return $true
     } catch {
-        # Fallback to legacy balloon notification
         try {
             [System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") | Out-Null
             $balloon = New-Object System.Windows.Forms.NotifyIcon
@@ -140,25 +280,35 @@ function Send-ToastNotification {
 }
 
 function Send-Alert {
-    param([string]$Title, [string]$Message)
+    param(
+        [string]$Title,
+        [string]$Message,
+        [string]$Category = ""
+    )
     $script:AlertCount++
     Write-Log "$Title - $Message" -Level "ALERT"
 
-    # Windows toast notification is ALWAYS sent regardless of -Silent flag
-    # This ensures background/scheduled task mode still delivers desktop alerts
-    Send-ToastNotification -Title $Title -Message $Message
+    # Only send toast notification if this category is enabled in user preferences
+    $shouldNotify = $true
+    if ($Category -ne "" -and -not (Test-NotifyEnabled -Category $Category)) {
+        $shouldNotify = $false
+    }
+
+    if ($shouldNotify) {
+        Send-ToastNotification -Title $Title -Message $Message
+    }
 
     if (-not $Silent) {
-        # Console output and alert beep only in interactive mode
         Write-Alert "$Title - $Message"
-        try { [System.Console]::Beep(1000, 300); [System.Console]::Beep(1500, 300) } catch {}
+        if ($shouldNotify) {
+            try { [System.Console]::Beep(1000, 300); [System.Console]::Beep(1500, 300) } catch {}
+        }
     }
 }
 
 # --- FIRMWARE HASH BASELINE ---
 function Get-FirmwareFiles {
     $paths = @()
-    # UEFI/BIOS related system files
     $fwDirs = @(
         "$env:SystemRoot\System32\drivers",
         "$env:SystemRoot\Firmware",
@@ -219,7 +369,6 @@ function Compare-FirmwareBaseline {
             }
         } catch {}
     }
-    # Newly added files
     $currentFiles = Get-FirmwareFiles
     foreach ($f in $currentFiles) {
         if (-not $baseline.PSObject.Properties[$f.FullName]) {
@@ -256,13 +405,11 @@ function Compare-DriverBaseline {
     $baseNames = $baseline | ForEach-Object { $_.Name }
     $currNames = $current | ForEach-Object { $_.Name }
     $changes = @()
-    # Newly loaded drivers
     foreach ($d in $current) {
         if ($d.Name -notin $baseNames) {
             $changes += @{ Driver = $d.Name; Type = "NEW_DRIVER"; Detail = "New driver loaded: $($d.Name)" }
         }
     }
-    # Removed drivers
     foreach ($b in $baseline) {
         if ($b.Name -notin $currNames) {
             $changes += @{ Driver = $b.Name; Type = "REMOVED_DRIVER"; Detail = "Driver removed: $($b.Name)" }
@@ -343,13 +490,12 @@ function Watch-Connections {
             Write-Log $logEntry -Level "INFO" -Target $ConnectionLog
 
             if (-not $isKnown) {
-                Send-Alert "UNKNOWN CONNECTION" "$($conn.ProcessName) -> $($conn.RemoteAddr):$($conn.RemotePort)"
+                Send-Alert "UNKNOWN CONNECTION" "$($conn.ProcessName) -> $($conn.RemoteAddr):$($conn.RemotePort)" -Category "Connection"
             } else {
                 Write-Warn "Known connection: $($conn.ProcessName) -> $($conn.RemoteAddr):$($conn.RemotePort)"
             }
         }
     }
-    # Clean up closed connections
     $currentKeys = $current | ForEach-Object { "$($_.RemoteAddr):$($_.RemotePort)|$($_.PID)" }
     $staleKeys = $script:KnownRemotes.Keys | Where-Object { $_ -notin $currentKeys }
     foreach ($k in $staleKeys) {
@@ -382,11 +528,10 @@ function Watch-Processes {
             Write-Log $logEntry -Level "INFO" -Target $ProcessLog
 
             if (-not $isKnown -and $proc.Path -and -not $isSigned) {
-                Send-Alert "UNSIGNED PROCESS" "$($proc.ProcessName) (PID:$($proc.Id)) - $($proc.Path)"
+                Send-Alert "UNSIGNED PROCESS" "$($proc.ProcessName) (PID:$($proc.Id)) - $($proc.Path)" -Category "Process"
             }
         }
     }
-    # Clean up terminated processes
     $currentPids = $current | ForEach-Object { $_.Id }
     $stalePids = $script:KnownProcesses.Keys | Where-Object { $_ -notin $currentPids }
     foreach ($p in $stalePids) {
@@ -412,7 +557,7 @@ function Watch-Listeners {
 
             $isSystem = $proc.ProcessName -in @("svchost","lsass","services","wininit","spoolsv","System","steam")
             if (-not $isSystem) {
-                Send-Alert "NEW LISTENING PORT" "$key - $($proc.ProcessName)"
+                Send-Alert "NEW LISTENING PORT" "$key - $($proc.ProcessName)" -Category "Listener"
             }
         }
     }
@@ -423,15 +568,7 @@ $script:LastEventTime = Get-Date
 
 function Watch-SecurityEvents {
     $dangerousEventIds = @(
-        4624,   # Successful logon (Type 3,10 important)
-        4625,   # Failed logon attempt
-        4648,   # Logon with explicit credentials
-        4672,   # Special privileges assigned
-        4688,   # New process created
-        4697,   # Service installed
-        4720,   # User account created
-        4732,   # Member added to group
-        7045    # New service installed (System log)
+        4624, 4625, 4648, 4672, 4688, 4697, 4720, 4732, 7045
     )
     try {
         $events = Get-WinEvent -FilterHashtable @{
@@ -444,21 +581,17 @@ function Watch-SecurityEvents {
             $logEntry = "SECURITY EVENT [ID:$($evt.Id)] $($evt.TimeCreated) - $($evt.Message.Substring(0, [Math]::Min(200, $evt.Message.Length)))"
             Write-Log $logEntry -Level "WARN"
 
-            # Remote logon (Type 3 or 10) is especially dangerous
             if ($evt.Id -eq 4624 -and $evt.Message -match "Logon Type:\s+(3|10)") {
-                Send-Alert "REMOTE LOGON DETECTED" "Logon Type: $($Matches[1]) - $($evt.TimeCreated)"
+                Send-Alert "REMOTE LOGON DETECTED" "Logon Type: $($Matches[1]) - $($evt.TimeCreated)" -Category "Security"
             }
-            # Failed logon
             if ($evt.Id -eq 4625) {
-                Send-Alert "FAILED LOGON ATTEMPT" "$($evt.TimeCreated)"
+                Send-Alert "FAILED LOGON ATTEMPT" "$($evt.TimeCreated)" -Category "Security"
             }
-            # New user account created
             if ($evt.Id -eq 4720) {
-                Send-Alert "NEW USER ACCOUNT CREATED" "$($evt.TimeCreated)"
+                Send-Alert "NEW USER ACCOUNT CREATED" "$($evt.TimeCreated)" -Category "Security"
             }
-            # New service
             if ($evt.Id -eq 4697 -or $evt.Id -eq 7045) {
-                Send-Alert "NEW SERVICE INSTALLED" "$($evt.TimeCreated)"
+                Send-Alert "NEW SERVICE INSTALLED" "$($evt.TimeCreated)" -Category "Security"
             }
         }
         $script:LastEventTime = Get-Date
@@ -506,17 +639,16 @@ function Watch-Registry {
     foreach ($key in $criticalKeys) {
         $hash = Get-RegistryHash -KeyPath $key
         if ($hash -and $script:RegistryBaseline.ContainsKey($key) -and $script:RegistryBaseline[$key] -ne $hash) {
-            Send-Alert "REGISTRY CHANGED" "Key: $key"
+            Send-Alert "REGISTRY CHANGED" "Key: $key" -Category "Registry"
             Write-Log "Registry change: $key | Old: $($script:RegistryBaseline[$key].Substring(0,16))... New: $($hash.Substring(0,16))..." -Level "ALERT"
             $script:RegistryBaseline[$key] = $hash
         }
     }
 
-    # RDP status
     try {
         $rdp = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections).fDenyTSConnections
         if ($rdp -eq 0) {
-            Send-Alert "RDP ENABLED" "Remote Desktop connection is enabled!"
+            Send-Alert "RDP ENABLED" "Remote Desktop connection is enabled!" -Category "RDP"
         }
     } catch {}
 }
@@ -531,7 +663,7 @@ function Watch-HostsFile {
         if ($null -eq $script:HostsHash) {
             $script:HostsHash = $hash
         } elseif ($script:HostsHash -ne $hash) {
-            Send-Alert "HOSTS FILE MODIFIED" "DNS redirection may have changed!"
+            Send-Alert "HOSTS FILE MODIFIED" "DNS redirection may have changed!" -Category "Hosts"
             $script:HostsHash = $hash
         }
     } catch {}
@@ -542,7 +674,7 @@ function Start-Monitoring {
     $banner = @"
 
   ======================================================
-    SECURITY MONITORING SYSTEM v2.0
+    SECURITY MONITORING SYSTEM v3.0
     Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
     Computer: $env:COMPUTERNAME
     User: $env:USERNAME
@@ -606,13 +738,12 @@ function Start-Monitoring {
     Write-Host "-----------------------------------------------------------" -ForegroundColor DarkGray
 
     $cycle = 0
-    $fwCheckInterval = 30  # Firmware check every 30 cycles (~5 min)
+    $fwCheckInterval = 30
 
     while ($true) {
         $cycle++
         $ts = Get-Date -Format "HH:mm:ss"
 
-        # Every cycle
         Watch-Connections
         Watch-Processes
         Watch-Listeners
@@ -620,32 +751,30 @@ function Start-Monitoring {
         Watch-Registry
         Watch-HostsFile
 
-        # Periodic firmware and driver check
         if ($cycle % $fwCheckInterval -eq 0) {
             Write-Status "[$ts] Running firmware integrity check..."
             $fwChanges = Compare-FirmwareBaseline
             if ($fwChanges -and $fwChanges.Count -gt 0) {
                 foreach ($change in $fwChanges) {
-                    Send-Alert "FIRMWARE $($change.Type)" "$($change.File) - $($change.Detail)"
+                    Send-Alert "FIRMWARE $($change.Type)" "$($change.File) - $($change.Detail)" -Category "Firmware"
                 }
             }
 
             $drvChanges = Compare-DriverBaseline
             if ($drvChanges -and $drvChanges.Count -gt 0) {
                 foreach ($change in $drvChanges) {
-                    Send-Alert $change.Type $change.Detail
+                    Send-Alert $change.Type $change.Detail -Category "Driver"
                 }
             }
 
             $svcChanges = Compare-ServiceBaseline
             if ($svcChanges -and $svcChanges.Count -gt 0) {
                 foreach ($change in $svcChanges) {
-                    Send-Alert $change.Type $change.Detail
+                    Send-Alert $change.Type $change.Detail -Category "Service"
                 }
             }
         }
 
-        # Status display (every 6 cycles = ~1 min)
         if ($cycle % 6 -eq 0) {
             $uptime = (Get-Date) - $script:StartTime
             $uptimeStr = "{0:D2}h {1:D2}m {2:D2}s" -f $uptime.Hours, $uptime.Minutes, $uptime.Seconds
