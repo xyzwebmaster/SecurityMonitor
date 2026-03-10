@@ -2739,122 +2739,136 @@ function Start-Monitoring {
     Write-Host $banner -ForegroundColor Cyan
     Write-Log "=== MONITORING STARTED === Computer: $env:COMPUTERNAME | User: $env:USERNAME" -Level "INFO"
 
-    # Initialize system tray icon for clickable notifications
+    # Initialize system tray icon FIRST — must happen before Application.Run()
     Initialize-TrayIcon
     Write-Ok "System tray icon initialized (click notifications for details)"
-
-    # Create baselines
-    $fwBaseline = $null
-    if (Test-Path $FirmwareBaseline) {
-        Write-Ok "Existing firmware baseline loaded"
-        $fwBaseline = Get-Content $FirmwareBaseline -Raw | ConvertFrom-Json
-    } else {
-        $fwBaseline = New-FirmwareBaseline
-    }
-
-    if (-not (Test-Path $DriverBaseline)) {
-        New-DriverBaseline
-    } else {
-        Write-Ok "Existing driver baseline loaded"
-    }
-
-    if (-not (Test-Path $ServiceBaseline)) {
-        New-ServiceBaseline
-    } else {
-        Write-Ok "Existing service baseline loaded"
-    }
-
-    New-RegistryBaseline
-
-    # Record existing processes
-    Get-Process | Where-Object { $_.Id -ne 0 -and $_.Id -ne 4 } | ForEach-Object {
-        $script:KnownProcesses[$_.Id] = @{ Name = $_.ProcessName; Path = $_.Path; Time = Get-Date }
-    }
-
-    # Record existing connections
-    Get-ConnectionSnapshot | ForEach-Object {
-        $key = "$($_.RemoteAddr):$($_.RemotePort)|$($_.PID)"
-        $script:KnownRemotes[$key] = Get-Date
-    }
-
-    # Record existing listeners
-    Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-    Where-Object { $_.LocalAddress -notmatch "^(127\.|::1)" } | ForEach-Object {
-        $key = "$($_.LocalAddress):$($_.LocalPort)"
-        $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
-        $script:KnownListeners[$key] = $proc.ProcessName
-    }
-
-    # Initial hosts file hash
-    try {
-        $script:HostsHash = (Get-FileHash "$env:SystemRoot\System32\drivers\etc\hosts" -Algorithm SHA256).Hash
-    } catch {}
-
-    Write-Host ""
-    Write-Ok "Monitoring active. Press Ctrl+C to stop."
-    Write-Host "-----------------------------------------------------------" -ForegroundColor DarkGray
 
     $script:MonitorCycle = 0
     $script:FwCheckInterval = 30
     $script:MonitoringRunning = $true
 
-    # Use a Forms Timer for monitoring so UI never blocks
-    $monitorTimer = New-Object System.Windows.Forms.Timer
-    $monitorTimer.Interval = ($IntervalSeconds * 1000)
-    $monitorTimer.Add_Tick({
+    # ── Deferred init timer: runs heavy baseline work AFTER message pump starts ──
+    # This ensures the tray icon is visible immediately on first run.
+    $initTimer = New-Object System.Windows.Forms.Timer
+    $initTimer.Interval = 200
+    $initTimer.Add_Tick({
+        $initTimer.Stop()
+        $initTimer.Dispose()
+
         try {
-            $monitorTimer.Stop()
-            $script:MonitorCycle++
-            $ts = Get-Date -Format "HH:mm:ss"
+            # Create baselines (heavy I/O — runs inside message loop now)
+            $fwBaseline = $null
+            if (Test-Path $FirmwareBaseline) {
+                Write-Ok "Existing firmware baseline loaded"
+                $fwBaseline = Get-Content $FirmwareBaseline -Raw | ConvertFrom-Json
+            } else {
+                $fwBaseline = New-FirmwareBaseline
+            }
 
-            Watch-Connections
-            Watch-Processes
-            Watch-Listeners
-            Watch-SecurityEvents
-            Watch-Registry
-            Watch-RegistryTampering
-            Watch-HostsFile
+            if (-not (Test-Path $DriverBaseline)) {
+                New-DriverBaseline
+            } else {
+                Write-Ok "Existing driver baseline loaded"
+            }
 
-            if ($script:MonitorCycle % $script:FwCheckInterval -eq 0) {
-                Write-Status "[$ts] Running firmware integrity check..."
-                $fwChanges = Compare-FirmwareBaseline
-                if ($fwChanges -and $fwChanges.Count -gt 0) {
-                    foreach ($change in $fwChanges) {
-                        Send-Alert "FIRMWARE $($change.Type)" "$($change.File) - $($change.Detail)" -Category "Firmware" -ExtraDetails @{
-                            "File Path"    = $change.File
-                            "Change Type"  = $change.Type
-                            "Detail"       = $change.Detail
+            if (-not (Test-Path $ServiceBaseline)) {
+                New-ServiceBaseline
+            } else {
+                Write-Ok "Existing service baseline loaded"
+            }
+
+            New-RegistryBaseline
+
+            # Record existing processes
+            Get-Process | Where-Object { $_.Id -ne 0 -and $_.Id -ne 4 } | ForEach-Object {
+                $script:KnownProcesses[$_.Id] = @{ Name = $_.ProcessName; Path = $_.Path; Time = Get-Date }
+            }
+
+            # Record existing connections
+            Get-ConnectionSnapshot | ForEach-Object {
+                $key = "$($_.RemoteAddr):$($_.RemotePort)|$($_.PID)"
+                $script:KnownRemotes[$key] = Get-Date
+            }
+
+            # Record existing listeners
+            Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+            Where-Object { $_.LocalAddress -notmatch "^(127\.|::1)" } | ForEach-Object {
+                $key = "$($_.LocalAddress):$($_.LocalPort)"
+                $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+                $script:KnownListeners[$key] = $proc.ProcessName
+            }
+
+            # Initial hosts file hash
+            try {
+                $script:HostsHash = (Get-FileHash "$env:SystemRoot\System32\drivers\etc\hosts" -Algorithm SHA256).Hash
+            } catch {}
+
+            Write-Host ""
+            Write-Ok "Monitoring active. Press Ctrl+C to stop."
+            Write-Host "-----------------------------------------------------------" -ForegroundColor DarkGray
+
+            # Start the monitoring timer now that baselines are ready
+            $script:MonitorTimer = New-Object System.Windows.Forms.Timer
+            $script:MonitorTimer.Interval = ($IntervalSeconds * 1000)
+            $script:MonitorTimer.Add_Tick({
+                try {
+                    $script:MonitorTimer.Stop()
+                    $script:MonitorCycle++
+                    $ts = Get-Date -Format "HH:mm:ss"
+
+                    Watch-Connections
+                    Watch-Processes
+                    Watch-Listeners
+                    Watch-SecurityEvents
+                    Watch-Registry
+                    Watch-RegistryTampering
+                    Watch-HostsFile
+
+                    if ($script:MonitorCycle % $script:FwCheckInterval -eq 0) {
+                        Write-Status "[$ts] Running firmware integrity check..."
+                        $fwChanges = Compare-FirmwareBaseline
+                        if ($fwChanges -and $fwChanges.Count -gt 0) {
+                            foreach ($change in $fwChanges) {
+                                Send-Alert "FIRMWARE $($change.Type)" "$($change.File) - $($change.Detail)" -Category "Firmware" -ExtraDetails @{
+                                    "File Path"    = $change.File
+                                    "Change Type"  = $change.Type
+                                    "Detail"       = $change.Detail
+                                }
+                            }
+                        }
+
+                        $drvChanges = Compare-DriverBaseline
+                        if ($drvChanges -and $drvChanges.Count -gt 0) {
+                            foreach ($change in $drvChanges) {
+                                Send-Alert $change.Type $change.Detail -Category "Driver"
+                            }
+                        }
+
+                        $svcChanges = Compare-ServiceBaseline
+                        if ($svcChanges -and $svcChanges.Count -gt 0) {
+                            foreach ($change in $svcChanges) {
+                                Send-Alert $change.Type $change.Detail -Category "Service"
+                            }
                         }
                     }
-                }
 
-                $drvChanges = Compare-DriverBaseline
-                if ($drvChanges -and $drvChanges.Count -gt 0) {
-                    foreach ($change in $drvChanges) {
-                        Send-Alert $change.Type $change.Detail -Category "Driver"
+                    if ($script:MonitorCycle % 6 -eq 0) {
+                        $uptime = (Get-Date) - $script:StartTime
+                        $uptimeStr = "{0:D2}h {1:D2}m {2:D2}s" -f $uptime.Hours, $uptime.Minutes, $uptime.Seconds
+                        Write-Host "[$ts] Uptime: $uptimeStr | Alerts: $($script:AlertCount) | Connections: $($script:KnownRemotes.Count) | Processes: $($script:KnownProcesses.Count)" -ForegroundColor DarkGray
                     }
+                } catch {
+                    Write-Warn "Monitor tick error: $($_.Exception.Message)"
+                } finally {
+                    if ($script:MonitoringRunning) { $script:MonitorTimer.Start() }
                 }
-
-                $svcChanges = Compare-ServiceBaseline
-                if ($svcChanges -and $svcChanges.Count -gt 0) {
-                    foreach ($change in $svcChanges) {
-                        Send-Alert $change.Type $change.Detail -Category "Service"
-                    }
-                }
-            }
-
-            if ($script:MonitorCycle % 6 -eq 0) {
-                $uptime = (Get-Date) - $script:StartTime
-                $uptimeStr = "{0:D2}h {1:D2}m {2:D2}s" -f $uptime.Hours, $uptime.Minutes, $uptime.Seconds
-                Write-Host "[$ts] Uptime: $uptimeStr | Alerts: $($script:AlertCount) | Connections: $($script:KnownRemotes.Count) | Processes: $($script:KnownProcesses.Count)" -ForegroundColor DarkGray
-            }
+            })
+            $script:MonitorTimer.Start()
         } catch {
-            Write-Warn "Monitor tick error: $($_.Exception.Message)"
-        } finally {
-            if ($script:MonitoringRunning) { $monitorTimer.Start() }
+            Write-Warn "Init error: $($_.Exception.Message)"
         }
     })
-    $monitorTimer.Start()
+    $initTimer.Start()
 
     # Run the Windows Forms message loop (keeps UI responsive)
     [System.Windows.Forms.Application]::Run()
@@ -2877,6 +2891,7 @@ try {
         try { $script:DashboardForm.Dispose() } catch {}
     }
     # Clean up timers
+    if ($script:MonitorTimer) { try { $script:MonitorTimer.Stop(); $script:MonitorTimer.Dispose() } catch {} }
     if ($script:PulseTimer) { try { $script:PulseTimer.Stop(); $script:PulseTimer.Dispose() } catch {} }
     if ($script:DashTimer) { try { $script:DashTimer.Stop(); $script:DashTimer.Dispose() } catch {} }
     Write-Log "=== MONITORING STOPPED === Total alerts: $script:AlertCount" -Level "INFO"
