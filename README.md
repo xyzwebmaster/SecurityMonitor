@@ -24,9 +24,18 @@ A PowerShell-based tool that performs continuous hardware and system-level secur
 
 ## Installation
 
+Just run once as Administrator — it automatically registers itself to start on every Windows logon:
+
 ```powershell
-# Open PowerShell as Administrator
-cd C:\Users\<username>\SecurityMonitor
+# Open PowerShell as Administrator and run:
+powershell -ExecutionPolicy Bypass -File C:\Users\<username>\SecurityMonitor\SecurityMonitor.ps1
+```
+
+That's it. From now on, it will auto-start silently every time Windows boots.
+
+Alternatively, use the installer script for a guided setup:
+
+```powershell
 powershell -ExecutionPolicy Bypass -File Install.ps1
 ```
 

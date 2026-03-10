@@ -18,6 +18,38 @@ param(
     [switch]$Silent
 )
 
+# --- AUTO-START REGISTRATION ---
+# When run for the first time, registers itself as a scheduled task to auto-start on Windows boot
+$taskName = "SecurityMonitor"
+$existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+if (-not $existingTask) {
+    try {
+        $scriptPath = $MyInvocation.MyCommand.Path
+        if ($scriptPath) {
+            $action = New-ScheduledTaskAction `
+                -Execute "powershell.exe" `
+                -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" -Silent"
+            $trigger = New-ScheduledTaskTrigger -AtLogon -User $env:USERNAME
+            $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest -LogonType Interactive
+            $settings = New-ScheduledTaskSettingsSet `
+                -AllowStartIfOnBatteries `
+                -DontStopIfGoingOnBatteries `
+                -StartWhenAvailable `
+                -RestartCount 3 `
+                -RestartInterval (New-TimeSpan -Minutes 1) `
+                -ExecutionTimeLimit (New-TimeSpan -Days 365)
+            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+                -Principal $principal -Settings $settings `
+                -Description "System security monitoring - auto start on boot" | Out-Null
+            Write-Host "[+] Auto-start registered: will run on every Windows logon" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "[~] Could not register auto-start task: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "[+] Auto-start already registered" -ForegroundColor Green
+}
+
 # --- CONFIGURATION ---
 $ErrorActionPreference = "SilentlyContinue"
 $script:StartTime = Get-Date
