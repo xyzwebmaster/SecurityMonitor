@@ -374,8 +374,8 @@ function Show-Dashboard {
         $navY += 44
     }
 
-    # Navigation switching function
-    function Switch-Page {
+    # Navigation switching scriptblock (stored in script scope so closures can reach it)
+    $script:SwitchPageFn = {
         param([string]$targetName)
         foreach ($pKey in $pages.Keys) { $pages[$pKey].Visible = ($pKey -eq $targetName) }
         foreach ($nb in $navButtons) {
@@ -391,10 +391,11 @@ function Show-Dashboard {
         }
     }
 
-    # Bind each nav button with its own captured tag value
+    # Bind each nav button - use direct event handler with sender's Tag
     foreach ($b in $navButtons) {
-        $tag = $b.Tag
-        $b.Add_Click({ Switch-Page $tag }.GetNewClosure())
+        $b.Add_Click({
+            try { & $script:SwitchPageFn $this.Tag } catch {}
+        })
     }
 
     # ═══════════════════════════════════════════════════════════════
@@ -950,7 +951,7 @@ function Show-Dashboard {
     $script:DashTimer.Start()
 
     # Open default tab
-    Switch-Page $OpenTab
+    & $script:SwitchPageFn $OpenTab
 
     $form.Show()
 }
