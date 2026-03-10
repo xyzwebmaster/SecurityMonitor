@@ -1274,6 +1274,30 @@ function Show-Dashboard {
     $openLogBtn.Add_Click({ if ($this.Tag -and (Test-Path $this.Tag)) { Start-Process notepad.exe $this.Tag } })
     $detailBox.Controls.Add($openLogBtn)
 
+    # Open in Regedit button (hidden until registry alert selected)
+    $script:RegeditBtn = New-Object System.Windows.Forms.Button
+    $regeditBtn = $script:RegeditBtn
+    $regeditBtn.Text = "Open in Regedit"
+    $regeditBtn.Location = New-Object System.Drawing.Point(485, 180)
+    $regeditBtn.Size = New-Object System.Drawing.Size(180, 34)
+    $regeditBtn.FlatStyle = "Flat"
+    $regeditBtn.BackColor = [System.Drawing.Color]::FromArgb(180, 100, 0)
+    $regeditBtn.ForeColor = $colTextMain
+    $regeditBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $regeditBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $regeditBtn.Visible = $false
+    $regeditBtn.Tag = ""
+    $regeditBtn.Add_Click({
+        if ($this.Tag) {
+            try {
+                $regeditPath = $this.Tag -replace '^HKLM:\\', 'HKEY_LOCAL_MACHINE\' -replace '^HKCU:\\', 'HKEY_CURRENT_USER\' -replace '^HKCR:\\', 'HKEY_CLASSES_ROOT\'
+                Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Applets\Regedit" -Name "LastKey" -Value $regeditPath -ErrorAction SilentlyContinue
+                Start-Process regedit.exe
+            } catch {}
+        }
+    })
+    $detailBox.Controls.Add($regeditBtn)
+
     # Click on alert row → populate detail panel with auto-sizing
     $alertListView.Add_SelectedIndexChanged({
         try {
@@ -1335,6 +1359,16 @@ function Show-Dashboard {
                 $script:IpLookupBtn.Visible = $true
             } else {
                 $script:IpLookupBtn.Visible = $false
+            }
+
+            # Show/hide Regedit button for registry alerts
+            $regPath = $ad.Details["Registry Path"]
+            if ($regPath) {
+                $script:RegeditBtn.Tag = $regPath
+                $script:RegeditBtn.Visible = $true
+                $script:RegeditBtn.Location = New-Object System.Drawing.Point(485, $btnY)
+            } else {
+                $script:RegeditBtn.Visible = $false
             }
         } catch {}
     })
@@ -2576,6 +2610,7 @@ function Watch-SecurityEvents {
 
 # --- REGISTRY MONITORING ---
 $script:RegistryBaseline = @{}
+$script:RegistrySnapshotCache = @{}
 
 function Get-RegistryHash {
     param([string]$KeyPath)
@@ -2600,7 +2635,20 @@ function New-RegistryBaseline {
     )
     foreach ($key in $keys) {
         $hash = Get-RegistryHash -KeyPath $key
-        if ($hash) { $script:RegistryBaseline[$key] = $hash }
+        if ($hash) {
+            $script:RegistryBaseline[$key] = $hash
+            # Cache current values for before/after comparison
+            $vals = @{}
+            try {
+                $props = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue
+                foreach ($p in $props.PSObject.Properties) {
+                    if ($p.Name -notin @("PSPath","PSParentPath","PSChildName","PSDrive","PSProvider")) {
+                        $vals[$p.Name] = "$($p.Value)"
+                    }
+                }
+            } catch {}
+            $script:RegistrySnapshotCache[$key] = $vals
+        }
     }
     Write-Ok "Registry baseline created ($($keys.Count) keys)"
 }
@@ -2615,9 +2663,54 @@ function Watch-Registry {
     foreach ($key in $criticalKeys) {
         $hash = Get-RegistryHash -KeyPath $key
         if ($hash -and $script:RegistryBaseline.ContainsKey($key) -and $script:RegistryBaseline[$key] -ne $hash) {
-            Send-Alert "REGISTRY CHANGED" "Key: $key" -Category "Registry"
+            # Capture before/after registry values
+            $beforeSnapshot = $script:RegistrySnapshotCache[$key]
+            $afterValues = @{}
+            try {
+                $props = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue
+                foreach ($p in $props.PSObject.Properties) {
+                    if ($p.Name -notin @("PSPath","PSParentPath","PSChildName","PSDrive","PSProvider")) {
+                        $afterValues[$p.Name] = "$($p.Value)"
+                    }
+                }
+            } catch {}
+
+            # Determine what changed
+            $added = @(); $removed = @(); $modified = @()
+            if ($beforeSnapshot) {
+                foreach ($k in $afterValues.Keys) {
+                    if (-not $beforeSnapshot.ContainsKey($k)) { $added += "$k = $($afterValues[$k])" }
+                    elseif ($beforeSnapshot[$k] -ne $afterValues[$k]) { $modified += "$k`: $($beforeSnapshot[$k]) -> $($afterValues[$k])" }
+                }
+                foreach ($k in $beforeSnapshot.Keys) {
+                    if (-not $afterValues.ContainsKey($k)) { $removed += "$k = $($beforeSnapshot[$k])" }
+                }
+            }
+
+            $changeDesc = @()
+            if ($added.Count -gt 0)    { $changeDesc += "ADDED: $($added -join '; ')" }
+            if ($removed.Count -gt 0)  { $changeDesc += "REMOVED: $($removed -join '; ')" }
+            if ($modified.Count -gt 0) { $changeDesc += "MODIFIED: $($modified -join '; ')" }
+            $changeText = if ($changeDesc.Count -gt 0) { $changeDesc -join "`n" } else { "Hash changed (details unavailable)" }
+
+            $details = @{
+                "Registry Path" = $key
+                "Change Details" = $changeText
+                "Before Hash" = $script:RegistryBaseline[$key].Substring(0, 16) + "..."
+                "After Hash"  = $hash.Substring(0, 16) + "..."
+            }
+            if ($added.Count -gt 0)    { $details["Added Entries"] = $added -join "`n" }
+            if ($removed.Count -gt 0)  { $details["Removed Entries"] = $removed -join "`n" }
+            if ($modified.Count -gt 0) { $details["Modified Entries"] = $modified -join "`n" }
+
+            # List current values
+            $currentVals = ($afterValues.GetEnumerator() | ForEach-Object { "$($_.Key) = $($_.Value)" }) -join "`n"
+            if ($currentVals) { $details["Current Values"] = $currentVals }
+
+            Send-Alert "REGISTRY CHANGED" "Key: $key" -Category "Registry" -ExtraDetails $details
             Write-Log "Registry change: $key | Old: $($script:RegistryBaseline[$key].Substring(0,16))... New: $($hash.Substring(0,16))..." -Level "ALERT"
             $script:RegistryBaseline[$key] = $hash
+            $script:RegistrySnapshotCache[$key] = $afterValues
         }
     }
 
