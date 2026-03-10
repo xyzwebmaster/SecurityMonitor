@@ -243,13 +243,16 @@ $script:DashboardForm = $null
 function Show-Dashboard {
     param([string]$OpenTab = "Status")
 
-    # If dashboard already open, bring to front
+    # If dashboard already open, bring to front and switch tab
     try {
         if ($script:DashboardForm -and -not $script:DashboardForm.IsDisposed) {
             $script:DashboardForm.Show()
             $script:DashboardForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
             $script:DashboardForm.BringToFront()
             $script:DashboardForm.Activate()
+            if ($OpenTab -and $script:SwitchPageFn) {
+                try { & $script:SwitchPageFn $OpenTab } catch {}
+            }
             return
         }
     } catch {
@@ -1137,10 +1140,10 @@ function Initialize-TrayIcon {
     $script:TrayIcon.Visible = $true
 
     # LEFT CLICK on tray icon → open Dashboard
-    $script:TrayIcon.Add_Click({
+    $script:TrayIcon.Add_MouseClick({
         param($s, $e)
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
-            Show-Dashboard
+            try { Show-Dashboard } catch { Write-Host "[!] Dashboard error: $_" -ForegroundColor Red }
         }
     })
 
@@ -1153,19 +1156,19 @@ function Initialize-TrayIcon {
 
     $dashItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Dashboard")
     $dashItem.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-    $dashItem.Add_Click({ Show-Dashboard })
+    $dashItem.Add_Click({ try { Show-Dashboard } catch { Write-Host "[!] Dashboard error: $_" -ForegroundColor Red } })
     $contextMenu.Items.Add($dashItem) | Out-Null
 
     $alertsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Alerts")
-    $alertsItem.Add_Click({ Show-Dashboard -OpenTab "Alerts" })
+    $alertsItem.Add_Click({ try { Show-Dashboard -OpenTab "Alerts" } catch {} })
     $contextMenu.Items.Add($alertsItem) | Out-Null
 
     $settingsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Settings")
-    $settingsItem.Add_Click({ Show-Dashboard -OpenTab "Settings" })
+    $settingsItem.Add_Click({ try { Show-Dashboard -OpenTab "Settings" } catch {} })
     $contextMenu.Items.Add($settingsItem) | Out-Null
 
     $logsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Logs")
-    $logsItem.Add_Click({ Show-Dashboard -OpenTab "Logs" })
+    $logsItem.Add_Click({ try { Show-Dashboard -OpenTab "Logs" } catch {} })
     $contextMenu.Items.Add($logsItem) | Out-Null
 
     $contextMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
@@ -1189,9 +1192,9 @@ function Initialize-TrayIcon {
     $script:TrayIcon.Add_BalloonTipClicked({
         if ($null -ne $script:LastAlertData) {
             if ($script:LastAlertData.RemoteIP) {
-                Start-Process "https://ipinfo.io/$($script:LastAlertData.RemoteIP)"
+                try { Start-Process "https://ipinfo.io/$($script:LastAlertData.RemoteIP)" } catch {}
             }
-            Show-Dashboard -OpenTab "Alerts"
+            try { Show-Dashboard -OpenTab "Alerts" } catch {}
         }
     })
 }
