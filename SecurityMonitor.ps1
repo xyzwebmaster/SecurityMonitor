@@ -9,7 +9,7 @@
 .AUTHOR
     SecurityMonitor - Forensic Monitoring
 .VERSION
-    3.0.0
+    4.0.0
 #>
 
 param(
@@ -232,24 +232,330 @@ function Write-Log {
     }
 }
 
+# --- ALERT HISTORY (for GUI detail view) ---
+$script:AlertHistory = [System.Collections.ArrayList]@()
+
+# --- ALERT DETAIL GUI ---
+function Show-AlertDetailGUI {
+    param(
+        [hashtable]$AlertData
+    )
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "SecurityMonitor - Alert Details"
+    $form.Size = New-Object System.Drawing.Size(700, 520)
+    $form.StartPosition = "CenterScreen"
+    $form.FormBorderStyle = "FixedDialog"
+    $form.MaximizeBox = $false
+    $form.BackColor = [System.Drawing.Color]::FromArgb(25, 25, 35)
+    $form.ForeColor = [System.Drawing.Color]::White
+    $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $form.TopMost = $true
+
+    # Severity color bar
+    $severityPanel = New-Object System.Windows.Forms.Panel
+    $severityPanel.Location = New-Object System.Drawing.Point(0, 0)
+    $severityPanel.Size = New-Object System.Drawing.Size(700, 6)
+    $severityPanel.BackColor = [System.Drawing.Color]::FromArgb(220, 50, 50)
+    $form.Controls.Add($severityPanel)
+
+    # Title
+    $titleLabel = New-Object System.Windows.Forms.Label
+    $titleLabel.Text = $AlertData.Title
+    $titleLabel.Location = New-Object System.Drawing.Point(20, 18)
+    $titleLabel.Size = New-Object System.Drawing.Size(650, 30)
+    $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+    $titleLabel.ForeColor = [System.Drawing.Color]::FromArgb(255, 80, 80)
+    $form.Controls.Add($titleLabel)
+
+    # Category badge
+    $catLabel = New-Object System.Windows.Forms.Label
+    $catLabel.Text = "Category: $($AlertData.Category)"
+    $catLabel.Location = New-Object System.Drawing.Point(20, 52)
+    $catLabel.Size = New-Object System.Drawing.Size(300, 22)
+    $catLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Italic)
+    $catLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 255)
+    $form.Controls.Add($catLabel)
+
+    # Timestamp
+    $timeLabel = New-Object System.Windows.Forms.Label
+    $timeLabel.Text = "Time: $($AlertData.Timestamp)"
+    $timeLabel.Location = New-Object System.Drawing.Point(350, 52)
+    $timeLabel.Size = New-Object System.Drawing.Size(320, 22)
+    $timeLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $timeLabel.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 180)
+    $timeLabel.TextAlign = [System.Drawing.ContentAlignment]::TopRight
+    $form.Controls.Add($timeLabel)
+
+    # Separator
+    $sep = New-Object System.Windows.Forms.Label
+    $sep.Location = New-Object System.Drawing.Point(20, 78)
+    $sep.Size = New-Object System.Drawing.Size(650, 2)
+    $sep.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
+    $form.Controls.Add($sep)
+
+    # Detail panel with scroll
+    $detailPanel = New-Object System.Windows.Forms.Panel
+    $detailPanel.Location = New-Object System.Drawing.Point(20, 90)
+    $detailPanel.Size = New-Object System.Drawing.Size(650, 300)
+    $detailPanel.AutoScroll = $true
+    $detailPanel.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 42)
+    $form.Controls.Add($detailPanel)
+
+    $yOffset = 10
+    foreach ($key in $AlertData.Details.Keys) {
+        $keyLabel = New-Object System.Windows.Forms.Label
+        $keyLabel.Text = "${key}:"
+        $keyLabel.Location = New-Object System.Drawing.Point(10, $yOffset)
+        $keyLabel.Size = New-Object System.Drawing.Size(150, 22)
+        $keyLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+        $keyLabel.ForeColor = [System.Drawing.Color]::FromArgb(120, 180, 255)
+        $detailPanel.Controls.Add($keyLabel)
+
+        $valLabel = New-Object System.Windows.Forms.Label
+        $valLabel.Text = "$($AlertData.Details[$key])"
+        $valLabel.Location = New-Object System.Drawing.Point(165, $yOffset)
+        $valLabel.Size = New-Object System.Drawing.Size(460, 22)
+        $valLabel.Font = New-Object System.Drawing.Font("Consolas", 9)
+        $valLabel.ForeColor = [System.Drawing.Color]::White
+        $detailPanel.Controls.Add($valLabel)
+
+        $yOffset += 28
+    }
+
+    # --- Clickable action buttons at the bottom ---
+    $btnY = 400
+
+    # If this is a connection alert, add IP lookup button
+    if ($AlertData.Category -eq "Connection" -and $AlertData.RemoteIP) {
+        $ipBtn = New-Object System.Windows.Forms.Button
+        $ipBtn.Text = "Lookup IP on ipinfo.io ($($AlertData.RemoteIP))"
+        $ipBtn.Location = New-Object System.Drawing.Point(20, $btnY)
+        $ipBtn.Size = New-Object System.Drawing.Size(320, 36)
+        $ipBtn.FlatStyle = "Flat"
+        $ipBtn.BackColor = [System.Drawing.Color]::FromArgb(0, 130, 200)
+        $ipBtn.ForeColor = [System.Drawing.Color]::White
+        $ipBtn.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+        $ipBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $capturedIP = $AlertData.RemoteIP
+        $ipBtn.Add_Click({ Start-Process "https://ipinfo.io/$capturedIP" })
+        $form.Controls.Add($ipBtn)
+    }
+
+    # Open log file button
+    $logBtn = New-Object System.Windows.Forms.Button
+    $logBtn.Text = "Open Alert Log"
+    $logBtn.Location = New-Object System.Drawing.Point(360, $btnY)
+    $logBtn.Size = New-Object System.Drawing.Size(150, 36)
+    $logBtn.FlatStyle = "Flat"
+    $logBtn.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
+    $logBtn.ForeColor = [System.Drawing.Color]::White
+    $logBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $logBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $capturedLogFile = $AlertFile
+    $logBtn.Add_Click({ if (Test-Path $capturedLogFile) { Start-Process notepad.exe $capturedLogFile } })
+    $form.Controls.Add($logBtn)
+
+    # Close button
+    $closeBtn = New-Object System.Windows.Forms.Button
+    $closeBtn.Text = "Dismiss"
+    $closeBtn.Location = New-Object System.Drawing.Point(520, $btnY)
+    $closeBtn.Size = New-Object System.Drawing.Size(150, 36)
+    $closeBtn.FlatStyle = "Flat"
+    $closeBtn.BackColor = [System.Drawing.Color]::FromArgb(80, 30, 30)
+    $closeBtn.ForeColor = [System.Drawing.Color]::White
+    $closeBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $closeBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $closeBtn.Add_Click({ $form.Close() })
+    $form.Controls.Add($closeBtn)
+
+    # Show all alerts button
+    $allAlertsBtn = New-Object System.Windows.Forms.Button
+    $allAlertsBtn.Text = "View All Alerts ($($script:AlertHistory.Count))"
+    $allAlertsBtn.Location = New-Object System.Drawing.Point(20, ($btnY + 42))
+    $allAlertsBtn.Size = New-Object System.Drawing.Size(650, 30)
+    $allAlertsBtn.FlatStyle = "Flat"
+    $allAlertsBtn.BackColor = [System.Drawing.Color]::FromArgb(45, 45, 60)
+    $allAlertsBtn.ForeColor = [System.Drawing.Color]::FromArgb(180, 180, 200)
+    $allAlertsBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $allAlertsBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $allAlertsBtn.Add_Click({ Show-AllAlertsGUI })
+    $form.Controls.Add($allAlertsBtn)
+
+    $form.ShowDialog() | Out-Null
+}
+
+# --- ALL ALERTS HISTORY GUI ---
+function Show-AllAlertsGUI {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "SecurityMonitor - Alert History"
+    $form.Size = New-Object System.Drawing.Size(900, 600)
+    $form.StartPosition = "CenterScreen"
+    $form.BackColor = [System.Drawing.Color]::FromArgb(25, 25, 35)
+    $form.ForeColor = [System.Drawing.Color]::White
+    $form.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $form.TopMost = $true
+
+    $titleLabel = New-Object System.Windows.Forms.Label
+    $titleLabel.Text = "Alert History - Click any row for details"
+    $titleLabel.Location = New-Object System.Drawing.Point(15, 10)
+    $titleLabel.Size = New-Object System.Drawing.Size(860, 28)
+    $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+    $titleLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 255)
+    $form.Controls.Add($titleLabel)
+
+    $listView = New-Object System.Windows.Forms.ListView
+    $listView.Location = New-Object System.Drawing.Point(15, 45)
+    $listView.Size = New-Object System.Drawing.Size(855, 460)
+    $listView.View = "Details"
+    $listView.FullRowSelect = $true
+    $listView.GridLines = $true
+    $listView.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 42)
+    $listView.ForeColor = [System.Drawing.Color]::White
+    $listView.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $listView.Columns.Add("Time", 140) | Out-Null
+    $listView.Columns.Add("Category", 100) | Out-Null
+    $listView.Columns.Add("Title", 200) | Out-Null
+    $listView.Columns.Add("Message", 400) | Out-Null
+
+    for ($i = $script:AlertHistory.Count - 1; $i -ge 0; $i--) {
+        $a = $script:AlertHistory[$i]
+        $item = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
+        $item.SubItems.Add($a.Category) | Out-Null
+        $item.SubItems.Add($a.Title) | Out-Null
+        $item.SubItems.Add($a.Message) | Out-Null
+        $item.Tag = $i
+        if ($a.Category -eq "Connection") {
+            $item.ForeColor = [System.Drawing.Color]::FromArgb(255, 160, 50)
+        }
+        $listView.Items.Add($item) | Out-Null
+    }
+
+    $listView.Add_DoubleClick({
+        $sel = $listView.SelectedItems
+        if ($sel.Count -gt 0) {
+            $idx = $sel[0].Tag
+            $alertData = $script:AlertHistory[$idx]
+            Show-AlertDetailGUI -AlertData $alertData
+        }
+    })
+
+    $form.Controls.Add($listView)
+
+    # IP lookup hint
+    $hintLabel = New-Object System.Windows.Forms.Label
+    $hintLabel.Text = "Double-click any alert to see details. Connection alerts include IP lookup on ipinfo.io"
+    $hintLabel.Location = New-Object System.Drawing.Point(15, 515)
+    $hintLabel.Size = New-Object System.Drawing.Size(860, 22)
+    $hintLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $hintLabel.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 140)
+    $form.Controls.Add($hintLabel)
+
+    $form.ShowDialog() | Out-Null
+}
+
+# --- SYSTEM TRAY ICON ---
+$script:TrayIcon = $null
+$script:LastAlertData = $null
+
+function Initialize-TrayIcon {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    $script:TrayIcon = New-Object System.Windows.Forms.NotifyIcon
+    $script:TrayIcon.Icon = [System.Drawing.SystemIcons]::Shield
+    $script:TrayIcon.Text = "SecurityMonitor - Active"
+    $script:TrayIcon.Visible = $true
+
+    # Context menu
+    $contextMenu = New-Object System.Windows.Forms.ContextMenuStrip
+    $viewAlerts = New-Object System.Windows.Forms.ToolStripMenuItem("View All Alerts")
+    $viewAlerts.Add_Click({ Show-AllAlertsGUI })
+    $contextMenu.Items.Add($viewAlerts) | Out-Null
+
+    $openLogs = New-Object System.Windows.Forms.ToolStripMenuItem("Open Log Folder")
+    $openLogs.Add_Click({ Start-Process explorer.exe $LogDir })
+    $contextMenu.Items.Add($openLogs) | Out-Null
+
+    $contextMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+
+    $exitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Stop Monitoring")
+    $exitItem.Add_Click({
+        $script:TrayIcon.Visible = $false
+        $script:TrayIcon.Dispose()
+        [Environment]::Exit(0)
+    })
+    $contextMenu.Items.Add($exitItem) | Out-Null
+
+    $script:TrayIcon.ContextMenuStrip = $contextMenu
+
+    # Click on balloon tip opens the detail GUI
+    $script:TrayIcon.Add_BalloonTipClicked({
+        if ($null -ne $script:LastAlertData) {
+            if ($script:LastAlertData.Category -eq "Connection" -and $script:LastAlertData.RemoteIP) {
+                # Unknown connection: open ipinfo.io directly
+                Start-Process "https://ipinfo.io/$($script:LastAlertData.RemoteIP)"
+            } else {
+                # All other alerts: open detail GUI
+                Show-AlertDetailGUI -AlertData $script:LastAlertData
+            }
+        }
+    })
+}
+
 # --- WINDOWS TOAST NOTIFICATION ---
 function Send-ToastNotification {
     param(
         [string]$Title,
         [string]$Message,
-        [string]$Severity = "Warning"
+        [string]$Severity = "Warning",
+        [hashtable]$AlertData = $null
     )
+
+    # Store for balloon click handler
+    if ($AlertData) {
+        $script:LastAlertData = $AlertData
+    }
+
+    # Try system tray balloon first (supports click events)
+    if ($script:TrayIcon) {
+        try {
+            $script:TrayIcon.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Warning
+            $script:TrayIcon.BalloonTipTitle = "SecurityMonitor: $Title"
+            $tipText = $Message
+            if ($AlertData -and $AlertData.Category -eq "Connection" -and $AlertData.RemoteIP) {
+                $tipText = "$Message`nClick to lookup IP on ipinfo.io"
+            } else {
+                $tipText = "$Message`nClick to view details"
+            }
+            $script:TrayIcon.BalloonTipText = $tipText
+            $script:TrayIcon.ShowBalloonTip(8000)
+            return $true
+        } catch {}
+    }
+
+    # Fallback: Toast notification with launch action
     try {
         [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
         [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
 
+        $launchUrl = ""
+        if ($AlertData -and $AlertData.Category -eq "Connection" -and $AlertData.RemoteIP) {
+            $launchUrl = "https://ipinfo.io/$($AlertData.RemoteIP)"
+        }
+
         $template = @"
-<toast duration="long">
+<toast duration="long" launch="$launchUrl" activationType="protocol">
     <visual>
         <binding template="ToastGeneric">
             <text>SecurityMonitor: $Title</text>
             <text>$Message</text>
-            <text placement="attribution">Security Alert - $(Get-Date -Format 'HH:mm:ss')</text>
+            <text placement="attribution">Security Alert - $(Get-Date -Format 'HH:mm:ss') | Click for details</text>
         </binding>
     </visual>
     <audio src="ms-winsoundevent:Notification.Default"/>
@@ -262,20 +568,7 @@ function Send-ToastNotification {
         [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
         return $true
     } catch {
-        try {
-            [System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") | Out-Null
-            $balloon = New-Object System.Windows.Forms.NotifyIcon
-            $balloon.Icon = [System.Drawing.SystemIcons]::Warning
-            $balloon.BalloonTipIcon = "Warning"
-            $balloon.BalloonTipTitle = "SecurityMonitor: $Title"
-            $balloon.BalloonTipText = $Message
-            $balloon.Visible = $true
-            $balloon.ShowBalloonTip(5000)
-            Start-Sleep -Milliseconds 100
-            return $true
-        } catch {
-            return $false
-        }
+        return $false
     }
 }
 
@@ -283,10 +576,38 @@ function Send-Alert {
     param(
         [string]$Title,
         [string]$Message,
-        [string]$Category = ""
+        [string]$Category = "",
+        [string]$RemoteIP = "",
+        [hashtable]$ExtraDetails = @{}
     )
     $script:AlertCount++
     Write-Log "$Title - $Message" -Level "ALERT"
+
+    # Build alert data for GUI
+    $alertData = @{
+        Title     = $Title
+        Message   = $Message
+        Category  = $Category
+        RemoteIP  = $RemoteIP
+        Timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        Details   = @{
+            "Alert Type"  = $Title
+            "Description" = $Message
+            "Computer"    = $env:COMPUTERNAME
+            "User"        = $env:USERNAME
+        }
+    }
+    # Merge extra details
+    foreach ($key in $ExtraDetails.Keys) {
+        $alertData.Details[$key] = $ExtraDetails[$key]
+    }
+    # Add IP-specific details for connection alerts
+    if ($Category -eq "Connection" -and $RemoteIP) {
+        $alertData.Details["Remote IP"]   = $RemoteIP
+        $alertData.Details["IP Lookup"]   = "https://ipinfo.io/$RemoteIP"
+    }
+
+    [void]$script:AlertHistory.Add($alertData)
 
     # Only send toast notification if this category is enabled in user preferences
     $shouldNotify = $true
@@ -295,7 +616,7 @@ function Send-Alert {
     }
 
     if ($shouldNotify) {
-        Send-ToastNotification -Title $Title -Message $Message
+        Send-ToastNotification -Title $Title -Message $Message -AlertData $alertData
     }
 
     if (-not $Silent) {
@@ -490,7 +811,13 @@ function Watch-Connections {
             Write-Log $logEntry -Level "INFO" -Target $ConnectionLog
 
             if (-not $isKnown) {
-                Send-Alert "UNKNOWN CONNECTION" "$($conn.ProcessName) -> $($conn.RemoteAddr):$($conn.RemotePort)" -Category "Connection"
+                Send-Alert "UNKNOWN CONNECTION" "$($conn.ProcessName) -> $($conn.RemoteAddr):$($conn.RemotePort)" -Category "Connection" -RemoteIP $conn.RemoteAddr -ExtraDetails @{
+                    "Process Name" = $conn.ProcessName
+                    "Process Path" = $conn.ProcessPath
+                    "PID"          = "$($conn.PID)"
+                    "Local Port"   = "$($conn.LocalAddr):$($conn.LocalPort)"
+                    "Remote"       = "$($conn.RemoteAddr):$($conn.RemotePort)"
+                }
             } else {
                 Write-Warn "Known connection: $($conn.ProcessName) -> $($conn.RemoteAddr):$($conn.RemotePort)"
             }
@@ -528,7 +855,12 @@ function Watch-Processes {
             Write-Log $logEntry -Level "INFO" -Target $ProcessLog
 
             if (-not $isKnown -and $proc.Path -and -not $isSigned) {
-                Send-Alert "UNSIGNED PROCESS" "$($proc.ProcessName) (PID:$($proc.Id)) - $($proc.Path)" -Category "Process"
+                Send-Alert "UNSIGNED PROCESS" "$($proc.ProcessName) (PID:$($proc.Id)) - $($proc.Path)" -Category "Process" -ExtraDetails @{
+                    "Process Name" = $proc.ProcessName
+                    "PID"          = "$($proc.Id)"
+                    "Path"         = "$($proc.Path)"
+                    "Signed"       = "No"
+                }
             }
         }
     }
@@ -557,7 +889,12 @@ function Watch-Listeners {
 
             $isSystem = $proc.ProcessName -in @("svchost","lsass","services","wininit","spoolsv","System","steam")
             if (-not $isSystem) {
-                Send-Alert "NEW LISTENING PORT" "$key - $($proc.ProcessName)" -Category "Listener"
+                Send-Alert "NEW LISTENING PORT" "$key - $($proc.ProcessName)" -Category "Listener" -ExtraDetails @{
+                    "Listening On" = $key
+                    "Process"      = $proc.ProcessName
+                    "PID"          = "$($l.OwningProcess)"
+                    "Path"         = "$($proc.Path)"
+                }
             }
         }
     }
@@ -686,6 +1023,10 @@ function Start-Monitoring {
     Write-Host $banner -ForegroundColor Cyan
     Write-Log "=== MONITORING STARTED === Computer: $env:COMPUTERNAME | User: $env:USERNAME" -Level "INFO"
 
+    # Initialize system tray icon for clickable notifications
+    Initialize-TrayIcon
+    Write-Ok "System tray icon initialized (click notifications for details)"
+
     # Create baselines
     $fwBaseline = $null
     if (Test-Path $FirmwareBaseline) {
@@ -756,7 +1097,11 @@ function Start-Monitoring {
             $fwChanges = Compare-FirmwareBaseline
             if ($fwChanges -and $fwChanges.Count -gt 0) {
                 foreach ($change in $fwChanges) {
-                    Send-Alert "FIRMWARE $($change.Type)" "$($change.File) - $($change.Detail)" -Category "Firmware"
+                    Send-Alert "FIRMWARE $($change.Type)" "$($change.File) - $($change.Detail)" -Category "Firmware" -ExtraDetails @{
+                    "File Path"    = $change.File
+                    "Change Type"  = $change.Type
+                    "Detail"       = $change.Detail
+                }
                 }
             }
 
@@ -781,6 +1126,9 @@ function Start-Monitoring {
             Write-Host "[$ts] Uptime: $uptimeStr | Alerts: $($script:AlertCount) | Connections: $($script:KnownRemotes.Count) | Processes: $($script:KnownProcesses.Count)" -ForegroundColor DarkGray
         }
 
+        # Process Windows Forms events so tray icon and click handlers stay responsive
+        [System.Windows.Forms.Application]::DoEvents()
+
         Start-Sleep -Seconds $IntervalSeconds
     }
 }
@@ -792,6 +1140,11 @@ try {
     Write-Log "ERROR: $($_.Exception.Message)" -Level "ERROR"
     Write-Alert "Monitoring error: $($_.Exception.Message)"
 } finally {
+    # Clean up tray icon
+    if ($script:TrayIcon) {
+        $script:TrayIcon.Visible = $false
+        $script:TrayIcon.Dispose()
+    }
     Write-Log "=== MONITORING STOPPED === Total alerts: $script:AlertCount" -Level "INFO"
     Write-Host "`nMonitoring stopped. Total alerts: $script:AlertCount" -ForegroundColor Yellow
     Write-Host "Log files: $LogDir" -ForegroundColor Cyan
