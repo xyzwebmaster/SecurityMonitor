@@ -270,7 +270,6 @@ function Show-Dashboard {
             $script:DashboardForm.BringToFront()
             $script:DashboardForm.Activate()
             # Resume timers that were paused on hide
-            try { if ($script:DashSlowTimer) { $script:DashSlowTimer.Start() } } catch {}
             try { if ($script:DashTimer)     { $script:DashTimer.Start() } } catch {}
             try { if ($script:PulseTimer)    { $script:PulseTimer.Start() } } catch {}
             if ($OpenTab -and $script:SwitchPageFn) {
@@ -317,7 +316,6 @@ function Show-Dashboard {
         param($s, $e)
         $e.Cancel = $true
         $s.Hide()
-        try { if ($script:DashSlowTimer) { $script:DashSlowTimer.Stop() } } catch {}
         try { if ($script:DashTimer)     { $script:DashTimer.Stop() } } catch {}
         try { if ($script:PulseTimer)    { $script:PulseTimer.Stop() } } catch {}
     })
@@ -1912,56 +1910,64 @@ function Show-Dashboard {
   } catch { Write-Host "[!] Logs page error: $_" -ForegroundColor Red }
 
     # ── Status updater timer ──
-    # ── Cached data for dashboard (updated by background job, read by UI timer) ──
-    $script:DashCache = @{
+    # ── Cached data for dashboard (updated by background runspace, read by UI timer) ──
+    $script:DashCache = [hashtable]::Synchronized(@{
         CpuLoad = 0; RamUsed = 0; DiskUsed = 0
         DefenderOn = $null; FirewallOn = $null; UacOn = $null; RdpOff = $null
         NetConns = 0; NetTopStr = "None"
-        LastUpdate = [datetime]::MinValue
-    }
-
-    # Heavy data collector - runs on a slower cycle to avoid freezing UI
-    $script:DashSlowTimer = New-Object System.Windows.Forms.Timer
-    $script:DashSlowTimer.Interval = 15000
-    $script:DashSlowTimer.Add_Tick({
-        try {
-            # CPU/RAM/Disk via WMI (these are SLOW - ~200-500ms each)
-            try {
-                $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue
-                if ($cpu) { $script:DashCache.CpuLoad = [math]::Round(($cpu | Measure-Object -Property LoadPercentage -Average).Average, 0) }
-            } catch {}
-            try {
-                $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
-                if ($os) { $script:DashCache.RamUsed = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 0) }
-            } catch {}
-            try {
-                $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue
-                if ($disk) { $script:DashCache.DiskUsed = [math]::Round((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100, 0) }
-            } catch {}
-
-            # Security posture checks
-            try { $def = Get-MpComputerStatus -ErrorAction SilentlyContinue; $script:DashCache.DefenderOn = ($def -and $def.AntivirusEnabled) } catch { $script:DashCache.DefenderOn = $null }
-            try { $fw = Get-NetFirewallProfile -ErrorAction SilentlyContinue; $script:DashCache.FirewallOn = (($fw | Where-Object { $_.Enabled }).Count -eq $fw.Count) } catch { $script:DashCache.FirewallOn = $null }
-            try { $script:DashCache.UacOn = ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -ErrorAction SilentlyContinue).EnableLUA -eq 1) } catch {}
-            try { $script:DashCache.RdpOff = ((Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -ErrorAction SilentlyContinue).fDenyTSConnections -eq 1) } catch {}
-
-            # Network summary
-            try {
-                $netConns = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
-                    Where-Object { $_.RemoteAddress -notmatch '^(127\.|0\.|::1|::$)' }
-                $script:DashCache.NetConns = if ($netConns) { $netConns.Count } else { 0 }
-                $topProcs = $netConns | Group-Object -Property OwningProcess |
-                    Sort-Object Count -Descending | Select-Object -First 5 |
-                    ForEach-Object {
-                        $pName = (Get-Process -Id $_.Name -ErrorAction SilentlyContinue).ProcessName
-                        if (-not $pName) { $pName = "PID:$($_.Name)" }
-                        "$pName($($_.Count))"
-                    }
-                $script:DashCache.NetTopStr = if ($topProcs) { $topProcs -join "  |  " } else { "None" }
-            } catch {}
-            $script:DashCache.LastUpdate = Get-Date
-        } catch {}
+        Running = $true
     })
+
+    # Background runspace for heavy WMI/CIM queries - never blocks UI thread
+    $script:DashRunspace = [runspacefactory]::CreateRunspace()
+    $script:DashRunspace.ApartmentState = "STA"
+    $script:DashRunspace.Open()
+    $script:DashRunspace.SessionStateProxy.SetVariable("cache", $script:DashCache)
+    $script:DashPowerShell = [powershell]::Create().AddScript({
+        param($cache)
+        while ($cache.Running) {
+            try {
+                # CPU
+                try {
+                    $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue
+                    if ($cpu) { $cache.CpuLoad = [math]::Round(($cpu | Measure-Object -Property LoadPercentage -Average).Average, 0) }
+                } catch {}
+                # RAM
+                try {
+                    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+                    if ($os) { $cache.RamUsed = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 0) }
+                } catch {}
+                # Disk
+                try {
+                    $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue
+                    if ($disk) { $cache.DiskUsed = [math]::Round((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100, 0) }
+                } catch {}
+                # Security posture
+                try { $def = Get-MpComputerStatus -ErrorAction SilentlyContinue; $cache.DefenderOn = ($def -and $def.AntivirusEnabled) } catch { $cache.DefenderOn = $null }
+                try { $fw = Get-NetFirewallProfile -ErrorAction SilentlyContinue; $cache.FirewallOn = (($fw | Where-Object { $_.Enabled }).Count -eq $fw.Count) } catch { $cache.FirewallOn = $null }
+                try { $cache.UacOn = ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -ErrorAction SilentlyContinue).EnableLUA -eq 1) } catch {}
+                try { $cache.RdpOff = ((Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -ErrorAction SilentlyContinue).fDenyTSConnections -eq 1) } catch {}
+                # Network summary
+                try {
+                    $netConns = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+                        Where-Object { $_.RemoteAddress -notmatch '^(127\.|0\.|::1|::$)' }
+                    $cache.NetConns = if ($netConns) { @($netConns).Count } else { 0 }
+                    $topProcs = @($netConns) | Group-Object -Property OwningProcess |
+                        Sort-Object Count -Descending | Select-Object -First 5 |
+                        ForEach-Object {
+                            $pName = (Get-Process -Id $_.Name -ErrorAction SilentlyContinue).ProcessName
+                            if (-not $pName) { $pName = "PID:$($_.Name)" }
+                            "$pName($($_.Count))"
+                        }
+                    $cache.NetTopStr = if ($topProcs) { ($topProcs -join "  |  ") } else { "None" }
+                } catch {}
+            } catch {}
+            # Sleep 10 seconds between updates (doesn't block UI)
+            Start-Sleep -Seconds 10
+        }
+    }).AddArgument($script:DashCache)
+    $script:DashPowerShell.Runspace = $script:DashRunspace
+    $script:DashRunspaceHandle = $script:DashPowerShell.BeginInvoke()
 
     # Fast UI refresh timer - only reads cached data, never calls WMI/CIM
     $script:DashTimer = New-Object System.Windows.Forms.Timer
@@ -2055,7 +2061,6 @@ function Show-Dashboard {
             } catch {}
         } catch {}
     })
-    $script:DashSlowTimer.Start()
     $script:DashTimer.Start()
 
     # Set open tab and switch page
@@ -3487,24 +3492,40 @@ function Start-Monitoring {
             Write-Ok "Monitoring active. Press Ctrl+C to stop."
             Write-Host "-----------------------------------------------------------" -ForegroundColor DarkGray
 
-            # Start the monitoring timer now that baselines are ready
+            # Start the monitoring timer - work is spread across ticks to avoid UI freezes
+            # Each tick runs only a subset of checks (round-robin), so no single tick is heavy
+            $script:MonitorPhase = 0
             $script:MonitorTimer = New-Object System.Windows.Forms.Timer
-            $script:MonitorTimer.Interval = ($IntervalSeconds * 1000)
+            $script:MonitorTimer.Interval = [math]::Max(3000, [math]::Round(($IntervalSeconds * 1000) / 3))
             $script:MonitorTimer.Add_Tick({
                 try {
                     $script:MonitorTimer.Stop()
-                    $script:MonitorCycle++
+                    $phase = $script:MonitorPhase % 3
                     $ts = Get-Date -Format "HH:mm:ss"
 
-                    Watch-Connections
-                    Watch-Processes
-                    Watch-Listeners
-                    Watch-SecurityEvents
-                    Watch-Registry
-                    Watch-RegistryTampering
-                    Watch-HostsFile
+                    switch ($phase) {
+                        0 {
+                            # Phase 0: Network checks (connections + listeners)
+                            Watch-Connections
+                            Watch-Listeners
+                        }
+                        1 {
+                            # Phase 1: Process + security events
+                            Watch-Processes
+                            Watch-SecurityEvents
+                        }
+                        2 {
+                            # Phase 2: Registry + hosts + firmware (least frequent)
+                            Watch-Registry
+                            Watch-RegistryTampering
+                            Watch-HostsFile
+                            $script:MonitorCycle++
+                        }
+                    }
+                    $script:MonitorPhase++
 
-                    if ($script:MonitorCycle % $script:FwCheckInterval -eq 0) {
+                    # Firmware/driver/service checks on longer interval (based on full cycles)
+                    if ($phase -eq 2 -and $script:MonitorCycle % $script:FwCheckInterval -eq 0) {
                         Write-Status "[$ts] Running firmware integrity check..."
                         $fwChanges = Compare-FirmwareBaseline
                         if ($fwChanges -and $fwChanges.Count -gt 0) {
@@ -3532,7 +3553,7 @@ function Start-Monitoring {
                         }
                     }
 
-                    if ($script:MonitorCycle % 6 -eq 0) {
+                    if ($script:MonitorPhase % 18 -eq 0) {
                         $uptime = (Get-Date) - $script:StartTime
                         $uptimeStr = "{0:D2}h {1:D2}m {2:D2}s" -f $uptime.Hours, $uptime.Minutes, $uptime.Seconds
                         Write-Host "[$ts] Uptime: $uptimeStr | Alerts: $($script:AlertCount) | Connections: $($script:KnownRemotes.Count) | Processes: $($script:KnownProcesses.Count)" -ForegroundColor DarkGray
@@ -3591,7 +3612,10 @@ try {
     if ($script:SignalTimer) { try { $script:SignalTimer.Stop(); $script:SignalTimer.Dispose() } catch {} }
     if ($script:MonitorTimer) { try { $script:MonitorTimer.Stop(); $script:MonitorTimer.Dispose() } catch {} }
     if ($script:PulseTimer) { try { $script:PulseTimer.Stop(); $script:PulseTimer.Dispose() } catch {} }
-    if ($script:DashSlowTimer) { try { $script:DashSlowTimer.Stop(); $script:DashSlowTimer.Dispose() } catch {} }
+    # Stop background runspace for dashboard data
+    if ($script:DashCache) { try { $script:DashCache.Running = $false } catch {} }
+    if ($script:DashPowerShell) { try { $script:DashPowerShell.Stop(); $script:DashPowerShell.Dispose() } catch {} }
+    if ($script:DashRunspace) { try { $script:DashRunspace.Close(); $script:DashRunspace.Dispose() } catch {} }
     if ($script:DashTimer) { try { $script:DashTimer.Stop(); $script:DashTimer.Dispose() } catch {} }
     # Release instance mutex
     if ($script:AppMutex) {
