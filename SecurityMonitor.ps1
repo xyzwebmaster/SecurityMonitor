@@ -1595,45 +1595,51 @@ try {
             # Auto-resize DetailContent panel to fit all rows
             $script:DetailContent.Height = [Math]::Max(80, $dy + 5)
 
-            # Reposition buttons below content with proper spacing
+            # Reposition buttons below content - all left-aligned in rows
             $btnY = $script:DetailContent.Bottom + 12
+            $btnX = 15
+
+            # Hide all action buttons first, then selectively show
+            $script:IpLookupBtn.Visible = $false
+            $script:BlockIpBtn.Visible = $false
+            $script:RegeditBtn.Visible = $false
+            $script:RestoreRegBtn.Visible = $false
+
+            # Row 1: OpenLog is always shown + context buttons
+            $script:OpenLogBtn.Location = New-Object System.Drawing.Point($btnX, $btnY)
+            $script:OpenLogBtn.Visible = $true
+            $nextX = $btnX + $script:OpenLogBtn.Width + 10
+
+            # Show/hide IP lookup button
+            if ($ad.RemoteIP) {
+                $script:IpLookupBtn.Text = "Lookup $($ad.RemoteIP)"
+                $script:IpLookupBtn.Tag = "$($ad.RemoteIP)"
+                $script:IpLookupBtn.Location = New-Object System.Drawing.Point($nextX, $btnY)
+                $script:IpLookupBtn.Visible = $true
+                $nextX += $script:IpLookupBtn.Width + 10
+            }
+
+            # Show Regedit button on same row if registry alert
+            $regPath = $ad.Details["Registry Path"]
+            if ($regPath) {
+                $script:RegeditBtn.Tag = $regPath
+                $script:RegeditBtn.Location = New-Object System.Drawing.Point($nextX, $btnY)
+                $script:RegeditBtn.Visible = $true
+            }
+
+            # Row 2: action buttons (Block IP / Restore Registry)
             $btnRow2Y = $btnY + 42
 
-            # Row 1: IpLookup / OpenLog / Regedit
-            $script:IpLookupBtn.Location = New-Object System.Drawing.Point(15, $btnY)
-            $script:OpenLogBtn.Location = New-Object System.Drawing.Point(310, $btnY)
-            $script:OpenLogBtn.Visible = $true
-
-            # Bring all buttons to front so DetailContent can't cover them
-            $script:IpLookupBtn.BringToFront()
-            $script:OpenLogBtn.BringToFront()
-            $script:RegeditBtn.BringToFront()
-            $script:BlockIpBtn.BringToFront()
-            $script:RestoreRegBtn.BringToFront()
-
-            # Show/hide IP lookup button and Block IP button
             if ($ad.RemoteIP) {
-                $script:IpLookupBtn.Text = "Lookup $($ad.RemoteIP) on ipinfo.io"
-                $script:IpLookupBtn.Tag = "$($ad.RemoteIP)"
-                $script:IpLookupBtn.Visible = $true
-
                 $script:BlockIpBtn.Tag = "$($ad.RemoteIP)"
-                $script:BlockIpBtn.Location = New-Object System.Drawing.Point(15, $btnRow2Y)
+                $script:BlockIpBtn.Location = New-Object System.Drawing.Point($btnX, $btnRow2Y)
                 $script:BlockIpBtn.Text = "Block IP (Firewall)"
                 $script:BlockIpBtn.BackColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
                 $script:BlockIpBtn.Enabled = $true
                 $script:BlockIpBtn.Visible = $true
-            } else {
-                $script:IpLookupBtn.Visible = $false
-                $script:BlockIpBtn.Visible = $false
             }
 
-            # Show/hide Regedit button and Restore Registry button for registry alerts
-            $regPath = $ad.Details["Registry Path"]
             if ($regPath) {
-                $script:RegeditBtn.Tag = $regPath
-                $script:RegeditBtn.Visible = $true
-                $script:RegeditBtn.Location = New-Object System.Drawing.Point(485, $btnY)
 
                 # Determine restore action based on alert type
                 $valueName = $ad.Details["Value Name"]
@@ -1682,15 +1688,20 @@ try {
                     $script:RestoreRegBtn.Text = $btnText
                     $script:RestoreRegBtn.BackColor = [System.Drawing.Color]::FromArgb(30, 130, 60)
                     $script:RestoreRegBtn.Enabled = $true
-                    $script:RestoreRegBtn.Location = New-Object System.Drawing.Point(485, $btnRow2Y)
+                    $restoreX = if ($ad.RemoteIP) { $btnX + $script:BlockIpBtn.Width + 10 } else { $btnX }
+                    $script:RestoreRegBtn.Location = New-Object System.Drawing.Point($restoreX, $btnRow2Y)
                     $script:RestoreRegBtn.Visible = $true
                 } else {
                     $script:RestoreRegBtn.Visible = $false
                 }
-            } else {
-                $script:RegeditBtn.Visible = $false
-                $script:RestoreRegBtn.Visible = $false
             }
+
+            # Bring all visible buttons to front
+            $script:OpenLogBtn.BringToFront()
+            $script:IpLookupBtn.BringToFront()
+            $script:RegeditBtn.BringToFront()
+            $script:BlockIpBtn.BringToFront()
+            $script:RestoreRegBtn.BringToFront()
         } catch {}
     })
 
