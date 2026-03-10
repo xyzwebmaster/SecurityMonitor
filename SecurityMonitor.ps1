@@ -356,309 +356,271 @@ function Start-AiThreatScan {
         if ($script:AiScanBtn) { $script:AiScanBtn.Enabled = $false }
     } catch {}
 
-    $scanJob = {
-        $findings = [System.Collections.ArrayList]@()
-        $toolsDir = $script:AiToolsDir
-        $hhPath = $script:HollowsHunterPath
+    $findings = [System.Collections.ArrayList]@()
+    $hhPath = $script:HollowsHunterPath
 
-        # ── ENGINE 1: HollowsHunter (memory injection scanner) ──
-        $hhAvailable = Test-Path $hhPath
-        if ($hhAvailable) {
-            try {
-                $outDir = Join-Path $env:TEMP "hh_scan_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-                New-Item -ItemType Directory -Path $outDir -Force | Out-Null
-                $hhArgs = "/json /quiet /dir `"$outDir`""
-                $psi = New-Object System.Diagnostics.ProcessStartInfo
-                $psi.FileName = $hhPath
-                $psi.Arguments = $hhArgs
-                $psi.UseShellExecute = $false
-                $psi.RedirectStandardOutput = $true
-                $psi.RedirectStandardError = $true
-                $psi.CreateNoWindow = $true
-                $proc = [System.Diagnostics.Process]::Start($psi)
-                $proc.WaitForExit(120000) # 2 min timeout
-                if (-not $proc.HasExited) { try { $proc.Kill() } catch {} }
+    # ── ENGINE 1: HollowsHunter (memory injection scanner) ──
+    $hhAvailable = Test-Path $hhPath
+    if ($hhAvailable) {
+        try {
+            $outDir = Join-Path $env:TEMP "hh_scan_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+            New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $hhPath
+            $psi.Arguments = "/json /quiet /dir `"$outDir`""
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $proc.WaitForExit(120000)
+            if (-not $proc.HasExited) { try { $proc.Kill() } catch {} }
 
-                # Parse results
-                $scanJson = Join-Path $outDir "scan_report.json"
-                if (Test-Path $scanJson) {
-                    $report = Get-Content $scanJson -Raw | ConvertFrom-Json
-                    if ($report.scanned) {
-                        foreach ($s in $report.scanned) {
-                            if ($s.is_managed -or $s.replaced -or $s.hdr_mod -or $s.iat_hooked -or $s.implanted -or $s.unreachable_file -or $s.patched) {
-                                $suspTypes = @()
-                                if ($s.replaced)         { $suspTypes += "Replaced/Hollowed" }
-                                if ($s.hdr_mod)          { $suspTypes += "Header Modified" }
-                                if ($s.iat_hooked)       { $suspTypes += "IAT Hooked" }
-                                if ($s.implanted)        { $suspTypes += "Code Implanted" }
-                                if ($s.patched)          { $suspTypes += "Memory Patched" }
-                                if ($s.unreachable_file) { $suspTypes += "Unreachable File" }
-                                $risk = if ($s.replaced -or $s.implanted) { "CRIT" } elseif ($s.iat_hooked -or $s.hdr_mod) { "HIGH" } else { "MED" }
-                                $pName = try { (Get-Process -Id $s.pid -ErrorAction SilentlyContinue).ProcessName } catch { "PID:$($s.pid)" }
-                                if (-not $pName) { $pName = "PID:$($s.pid)" }
-                                [void]$findings.Add(@{
-                                    Engine = "HollowsHunter"
-                                    Risk = $risk
-                                    Process = $pName
-                                    Finding = "Memory anomaly: $($suspTypes -join ', ')"
-                                    Details = [ordered]@{
-                                        "PID" = "$($s.pid)"
-                                        "Process" = $pName
-                                        "Detection" = ($suspTypes -join ", ")
-                                        "Scanned Modules" = "$($s.scanned)"
-                                        "Suspicious Modules" = "$($s.suspicious)"
-                                        "Analysis" = "Process memory differs from disk image - possible injection or tampering"
-                                    }
-                                })
-                            }
+            $scanJson = Join-Path $outDir "scan_report.json"
+            if (Test-Path $scanJson) {
+                $report = Get-Content $scanJson -Raw | ConvertFrom-Json
+                if ($report.scanned) {
+                    foreach ($s in $report.scanned) {
+                        if ($s.is_managed -or $s.replaced -or $s.hdr_mod -or $s.iat_hooked -or $s.implanted -or $s.unreachable_file -or $s.patched) {
+                            $suspTypes = @()
+                            if ($s.replaced)         { $suspTypes += "Replaced/Hollowed" }
+                            if ($s.hdr_mod)          { $suspTypes += "Header Modified" }
+                            if ($s.iat_hooked)       { $suspTypes += "IAT Hooked" }
+                            if ($s.implanted)        { $suspTypes += "Code Implanted" }
+                            if ($s.patched)          { $suspTypes += "Memory Patched" }
+                            if ($s.unreachable_file) { $suspTypes += "Unreachable File" }
+                            $risk = if ($s.replaced -or $s.implanted) { "CRIT" } elseif ($s.iat_hooked -or $s.hdr_mod) { "HIGH" } else { "MED" }
+                            $pName = try { (Get-Process -Id $s.pid -ErrorAction SilentlyContinue).ProcessName } catch { "PID:$($s.pid)" }
+                            if (-not $pName) { $pName = "PID:$($s.pid)" }
+                            [void]$findings.Add(@{
+                                Engine = "HollowsHunter"; Risk = $risk; Process = $pName
+                                Finding = "Memory anomaly: $($suspTypes -join ', ')"
+                                Details = [ordered]@{
+                                    "PID" = "$($s.pid)"; "Process" = $pName
+                                    "Detection" = ($suspTypes -join ", ")
+                                    "Scanned Modules" = "$($s.scanned)"; "Suspicious Modules" = "$($s.suspicious)"
+                                    "Analysis" = "Process memory differs from disk image - possible injection or tampering"
+                                }
+                            })
                         }
                     }
                 }
-                # Cleanup
-                try { Remove-Item $outDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
-            } catch {}
-        }
-
-        # ── ENGINE 2: Behavioral Heuristics (pure PowerShell) ──
-
-        # 2a. Suspicious parent-child relationships
-        try {
-            $procs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-                Where-Object { $_.ProcessId -ne 0 -and $_.ProcessId -ne 4 } |
-                Select-Object ProcessId, Name, ParentProcessId, CommandLine, ExecutablePath
-            $procMap = @{}
-            foreach ($p in $procs) { $procMap[$p.ProcessId] = $p }
-
-            $suspParentChild = @(
-                @{ Parent = "winword.exe";   Children = @("cmd.exe","powershell.exe","pwsh.exe","wscript.exe","cscript.exe","mshta.exe") },
-                @{ Parent = "excel.exe";     Children = @("cmd.exe","powershell.exe","pwsh.exe","wscript.exe","cscript.exe","mshta.exe") },
-                @{ Parent = "outlook.exe";   Children = @("cmd.exe","powershell.exe","pwsh.exe","wscript.exe","cscript.exe") },
-                @{ Parent = "svchost.exe";   Children = @("cmd.exe","powershell.exe","pwsh.exe","whoami.exe","net.exe","net1.exe") },
-                @{ Parent = "explorer.exe";  Children = @("mshta.exe","regsvr32.exe","rundll32.exe") }
-            )
-
-            foreach ($p in $procs) {
-                $parentProc = $procMap[$p.ParentProcessId]
-                if (-not $parentProc) { continue }
-                foreach ($rule in $suspParentChild) {
-                    if ($parentProc.Name -eq $rule.Parent -and $p.Name -in $rule.Children) {
-                        [void]$findings.Add(@{
-                            Engine = "Behavior"
-                            Risk = "HIGH"
-                            Process = $p.Name
-                            Finding = "Suspicious process tree: $($parentProc.Name) spawned $($p.Name)"
-                            Details = [ordered]@{
-                                "Child Process" = "$($p.Name) (PID: $($p.ProcessId))"
-                                "Parent Process" = "$($parentProc.Name) (PID: $($parentProc.ProcessId))"
-                                "Command Line" = "$($p.CommandLine)"
-                                "Analysis" = "Office/system processes should not spawn scripting engines - common in malware droppers"
-                            }
-                        })
-                    }
-                }
             }
+            try { Remove-Item $outDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
         } catch {}
-
-        # 2b. Suspicious command-line patterns (encoded commands, download cradles)
-        try {
-            foreach ($p in $procs) {
-                if (-not $p.CommandLine) { continue }
-                $cmd = $p.CommandLine
-                $suspPatterns = @()
-                $analysis = ""
-
-                if ($cmd -match '-[Ee]nc\s|encodedcommand|FromBase64String|Convert.*Base64') {
-                    $suspPatterns += "Base64/Encoded command"
-                    $analysis = "Encoded commands are commonly used to obfuscate malicious payloads"
-                }
-                if ($cmd -match 'Invoke-Expression|IEX\s*\(|\.DownloadString\(|\.DownloadFile\(|Net\.WebClient|Invoke-WebRequest.*\|') {
-                    $suspPatterns += "Download cradle"
-                    $analysis = "Pattern matches common PowerShell download-and-execute techniques"
-                }
-                if ($cmd -match 'Add-MpPreference.*ExclusionPath|Set-MpPreference.*DisableRealtimeMonitoring') {
-                    $suspPatterns += "Defender evasion"
-                    $analysis = "Attempting to disable or bypass Windows Defender"
-                }
-                if ($cmd -match '-w\s+hidden|-WindowStyle\s+[Hh]idden' -and $p.Name -match 'powershell|pwsh') {
-                    # Only flag if also has other suspicious indicators
-                    if ($cmd -match 'bypass|unrestricted|Net\.|WebClient|Download|Invoke-') {
-                        $suspPatterns += "Hidden PowerShell with bypass"
-                        $analysis = "Hidden PowerShell with execution policy bypass and network activity"
-                    }
-                }
-                if ($cmd -match 'mimikatz|rubeus|sharphound|bloodhound|lazagne|procdump.*lsass|sekurlsa') {
-                    $suspPatterns += "Known attack tool"
-                    $analysis = "Command references known offensive security / credential theft tool"
-                }
-
-                if ($suspPatterns.Count -gt 0) {
-                    $truncCmd = if ($cmd.Length -gt 200) { $cmd.Substring(0, 200) + "..." } else { $cmd }
-                    [void]$findings.Add(@{
-                        Engine = "Behavior"
-                        Risk = if ($suspPatterns -contains "Known attack tool" -or $suspPatterns -contains "Defender evasion") { "CRIT" } else { "HIGH" }
-                        Process = $p.Name
-                        Finding = "Suspicious command: $($suspPatterns -join ', ')"
-                        Details = [ordered]@{
-                            "Process" = "$($p.Name) (PID: $($p.ProcessId))"
-                            "Pattern" = ($suspPatterns -join ", ")
-                            "Command Line" = $truncCmd
-                            "Path" = "$($p.ExecutablePath)"
-                            "Analysis" = $analysis
-                        }
-                    })
-                }
-            }
-        } catch {}
-
-        # 2c. Unsigned executables in suspicious locations
-        try {
-            foreach ($p in $procs) {
-                if (-not $p.ExecutablePath) { continue }
-                $exePath = $p.ExecutablePath
-                $suspLoc = $exePath -match '\\Temp\\|\\AppData\\Local\\Temp\\|\\Downloads\\|\\ProgramData\\[^\\]+\.exe$|\\Users\\Public\\'
-                if (-not $suspLoc) { continue }
-
-                try {
-                    $sig = Get-AuthenticodeSignature $exePath -ErrorAction SilentlyContinue
-                    if ($sig.Status -ne "Valid") {
-                        [void]$findings.Add(@{
-                            Engine = "Behavior"
-                            Risk = "MED"
-                            Process = $p.Name
-                            Finding = "Unsigned executable in suspicious location"
-                            Details = [ordered]@{
-                                "Process" = "$($p.Name) (PID: $($p.ProcessId))"
-                                "Path" = $exePath
-                                "Signature" = "$($sig.Status)"
-                                "Analysis" = "Unsigned executables running from temp/download folders may indicate malware"
-                            }
-                        })
-                    }
-                } catch {}
-            }
-        } catch {}
-
-        # 2d. High-entropy executable names (randomized names)
-        try {
-            foreach ($p in $procs) {
-                if (-not $p.Name) { continue }
-                $name = [System.IO.Path]::GetFileNameWithoutExtension($p.Name)
-                if ($name.Length -lt 6) { continue }
-                # Check if name looks random (high consonant ratio, no dictionary pattern)
-                $consonants = ($name.ToLower().ToCharArray() | Where-Object { $_ -match '[bcdfghjklmnpqrstvwxyz]' }).Count
-                $ratio = $consonants / $name.Length
-                $hasDigitMix = $name -match '[a-zA-Z].*\d.*[a-zA-Z]|\d.*[a-zA-Z].*\d'
-                if (($ratio -gt 0.75 -and $name.Length -gt 7) -or ($hasDigitMix -and $name.Length -gt 10 -and $ratio -gt 0.5)) {
-                    # Exclude known legitimate patterns
-                    if ($name -match '^(svchost|csrss|conhost|dllhost|taskhostw?|sihost|RuntimeBroker|SearchHost|SecurityHealth|msedgewebview|WindowsTerminal)') { continue }
-                    if ($p.ExecutablePath -and $p.ExecutablePath -match '\\(Windows|Program Files|Microsoft)\\') { continue }
-                    [void]$findings.Add(@{
-                        Engine = "Heuristic"
-                        Risk = "MED"
-                        Process = $p.Name
-                        Finding = "Process name appears randomized (possible malware)"
-                        Details = [ordered]@{
-                            "Process" = "$($p.Name) (PID: $($p.ProcessId))"
-                            "Path" = "$($p.ExecutablePath)"
-                            "Name Entropy" = "Consonant ratio: $([math]::Round($ratio, 2)), Length: $($name.Length)"
-                            "Analysis" = "Malware often uses random-looking process names to avoid detection"
-                        }
-                    })
-                }
-            }
-        } catch {}
-
-        # 2e. Processes with no executable on disk (deleted/memory-only)
-        try {
-            foreach ($p in $procs) {
-                if (-not $p.ExecutablePath) { continue }
-                if (-not (Test-Path $p.ExecutablePath)) {
-                    [void]$findings.Add(@{
-                        Engine = "Heuristic"
-                        Risk = "HIGH"
-                        Process = $p.Name
-                        Finding = "Running process has no file on disk (fileless/deleted)"
-                        Details = [ordered]@{
-                            "Process" = "$($p.Name) (PID: $($p.ProcessId))"
-                            "Expected Path" = "$($p.ExecutablePath)"
-                            "Analysis" = "Executable was deleted after launch or running from memory only - strong indicator of malware"
-                        }
-                    })
-                }
-            }
-        } catch {}
-
-        # 2f. Masquerading detection (system process names from wrong locations)
-        try {
-            $sysProcs = @{
-                "svchost.exe"  = "C:\Windows\System32\svchost.exe"
-                "csrss.exe"    = "C:\Windows\System32\csrss.exe"
-                "lsass.exe"    = "C:\Windows\System32\lsass.exe"
-                "services.exe" = "C:\Windows\System32\services.exe"
-                "smss.exe"     = "C:\Windows\System32\smss.exe"
-                "wininit.exe"  = "C:\Windows\System32\wininit.exe"
-                "winlogon.exe" = "C:\Windows\System32\winlogon.exe"
-                "explorer.exe" = "C:\Windows\explorer.exe"
-            }
-            foreach ($p in $procs) {
-                if ($sysProcs.ContainsKey($p.Name.ToLower()) -and $p.ExecutablePath) {
-                    $expected = $sysProcs[$p.Name.ToLower()]
-                    if ($p.ExecutablePath -ne $expected -and $p.ExecutablePath -ne $expected.Replace("System32","SysWOW64")) {
-                        [void]$findings.Add(@{
-                            Engine = "Heuristic"
-                            Risk = "CRIT"
-                            Process = $p.Name
-                            Finding = "Process masquerading: $($p.Name) running from wrong location"
-                            Details = [ordered]@{
-                                "Process" = "$($p.Name) (PID: $($p.ProcessId))"
-                                "Actual Path" = "$($p.ExecutablePath)"
-                                "Expected Path" = $expected
-                                "Analysis" = "System process running from non-standard location is a strong indicator of malware masquerading"
-                            }
-                        })
-                    }
-                }
-            }
-        } catch {}
-
-        return $findings
     }
 
-    # Run scan in current thread (UI will be briefly unresponsive but simpler for admin tool)
+    # ── ENGINE 2: Behavioral Heuristics (pure PowerShell) ──
     try {
-        $results = & $scanJob
+        $procs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProcessId -ne 0 -and $_.ProcessId -ne 4 } |
+            Select-Object ProcessId, Name, ParentProcessId, CommandLine, ExecutablePath
+    } catch { $procs = @() }
+    $procMap = @{}
+    foreach ($p in $procs) { $procMap[$p.ProcessId] = $p }
 
-        $hhAvail = Test-Path $script:HollowsHunterPath
-        foreach ($f in $results) {
-            Add-AiThreat -Engine $f.Engine -Risk $f.Risk -ProcessName $f.Process -Finding $f.Finding -Details $f.Details
-        }
-
-        $script:AiLastScanTime = Get-Date
-        $statusText = "Last scan: $(Get-Date -Format 'HH:mm:ss') | Engines: Behavioral Analysis"
-        if ($hhAvail) { $statusText += " + HollowsHunter" }
-        $statusText += " | Findings: $($results.Count)"
-
-        if ($script:AiScanStatusLabel) { $script:AiScanStatusLabel.Text = $statusText }
-        if ($script:AiStatusLabel) { $script:AiStatusLabel.Text = $statusText }
-
-        $cntText = "$($script:AiThreatCount) threat(s) detected"
-        if ($script:AiThreatCount -eq 0) {
-            $cntText = "No threats detected"
-            if ($script:AiCountLabel) { $script:AiCountLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 100) }
-        } else {
-            if ($script:AiCountLabel) { $script:AiCountLabel.ForeColor = [System.Drawing.Color]::FromArgb(255, 80, 90) }
-        }
-        if ($script:AiCountLabel) { $script:AiCountLabel.Text = $cntText }
-
-        if (-not $hhAvail -and $script:AiScanStatusLabel) {
-            $script:AiScanStatusLabel.Text += "  [HollowsHunter not found - place hollows_hunter.exe in Tools\ for memory scanning]"
+    # 2a. Suspicious parent-child relationships
+    try {
+        $suspParentChild = @(
+            @{ Parent = "winword.exe";   Children = @("cmd.exe","powershell.exe","pwsh.exe","wscript.exe","cscript.exe","mshta.exe") },
+            @{ Parent = "excel.exe";     Children = @("cmd.exe","powershell.exe","pwsh.exe","wscript.exe","cscript.exe","mshta.exe") },
+            @{ Parent = "outlook.exe";   Children = @("cmd.exe","powershell.exe","pwsh.exe","wscript.exe","cscript.exe") },
+            @{ Parent = "svchost.exe";   Children = @("cmd.exe","powershell.exe","pwsh.exe","whoami.exe","net.exe","net1.exe") },
+            @{ Parent = "explorer.exe";  Children = @("mshta.exe","regsvr32.exe","rundll32.exe") }
+        )
+        foreach ($p in $procs) {
+            $parentProc = $procMap[$p.ParentProcessId]
+            if (-not $parentProc) { continue }
+            foreach ($rule in $suspParentChild) {
+                if ($parentProc.Name -eq $rule.Parent -and $p.Name -in $rule.Children) {
+                    [void]$findings.Add(@{
+                        Engine = "Behavior"; Risk = "HIGH"; Process = $p.Name
+                        Finding = "Suspicious process tree: $($parentProc.Name) spawned $($p.Name)"
+                        Details = [ordered]@{
+                            "Child Process" = "$($p.Name) (PID: $($p.ProcessId))"
+                            "Parent Process" = "$($parentProc.Name) (PID: $($parentProc.ProcessId))"
+                            "Command Line" = "$($p.CommandLine)"
+                            "Analysis" = "Office/system processes should not spawn scripting engines - common in malware droppers"
+                        }
+                    })
+                }
+            }
         }
     } catch {}
+
+    # 2b. Suspicious command-line patterns
+    try {
+        foreach ($p in $procs) {
+            if (-not $p.CommandLine) { continue }
+            $cmd = $p.CommandLine
+            $suspPatterns = @()
+            $analysis = ""
+
+            if ($cmd -match '-[Ee]nc\s|encodedcommand|FromBase64String|Convert.*Base64') {
+                $suspPatterns += "Base64/Encoded command"
+                $analysis = "Encoded commands are commonly used to obfuscate malicious payloads"
+            }
+            if ($cmd -match 'Invoke-Expression|IEX\s*\(|\.DownloadString\(|\.DownloadFile\(|Net\.WebClient|Invoke-WebRequest.*\|') {
+                $suspPatterns += "Download cradle"
+                $analysis = "Pattern matches common PowerShell download-and-execute techniques"
+            }
+            if ($cmd -match 'Add-MpPreference.*ExclusionPath|Set-MpPreference.*DisableRealtimeMonitoring') {
+                $suspPatterns += "Defender evasion"
+                $analysis = "Attempting to disable or bypass Windows Defender"
+            }
+            if ($cmd -match '-w\s+hidden|-WindowStyle\s+[Hh]idden' -and $p.Name -match 'powershell|pwsh') {
+                if ($cmd -match 'bypass|unrestricted|Net\.|WebClient|Download|Invoke-') {
+                    $suspPatterns += "Hidden PowerShell with bypass"
+                    $analysis = "Hidden PowerShell with execution policy bypass and network activity"
+                }
+            }
+            if ($cmd -match 'mimikatz|rubeus|sharphound|bloodhound|lazagne|procdump.*lsass|sekurlsa') {
+                $suspPatterns += "Known attack tool"
+                $analysis = "Command references known offensive security / credential theft tool"
+            }
+
+            if ($suspPatterns.Count -gt 0) {
+                $truncCmd = if ($cmd.Length -gt 200) { $cmd.Substring(0, 200) + "..." } else { $cmd }
+                [void]$findings.Add(@{
+                    Engine = "Behavior"
+                    Risk = if ($suspPatterns -contains "Known attack tool" -or $suspPatterns -contains "Defender evasion") { "CRIT" } else { "HIGH" }
+                    Process = $p.Name
+                    Finding = "Suspicious command: $($suspPatterns -join ', ')"
+                    Details = [ordered]@{
+                        "Process" = "$($p.Name) (PID: $($p.ProcessId))"
+                        "Pattern" = ($suspPatterns -join ", ")
+                        "Command Line" = $truncCmd
+                        "Path" = "$($p.ExecutablePath)"
+                        "Analysis" = $analysis
+                    }
+                })
+            }
+        }
+    } catch {}
+
+    # 2c. Unsigned executables in suspicious locations
+    try {
+        foreach ($p in $procs) {
+            if (-not $p.ExecutablePath) { continue }
+            $exePath = $p.ExecutablePath
+            if ($exePath -notmatch '\\Temp\\|\\AppData\\Local\\Temp\\|\\Downloads\\|\\ProgramData\\[^\\]+\.exe$|\\Users\\Public\\') { continue }
+            try {
+                $sig = Get-AuthenticodeSignature $exePath -ErrorAction SilentlyContinue
+                if ($sig.Status -ne "Valid") {
+                    [void]$findings.Add(@{
+                        Engine = "Behavior"; Risk = "MED"; Process = $p.Name
+                        Finding = "Unsigned executable in suspicious location"
+                        Details = [ordered]@{
+                            "Process" = "$($p.Name) (PID: $($p.ProcessId))"
+                            "Path" = $exePath; "Signature" = "$($sig.Status)"
+                            "Analysis" = "Unsigned executables running from temp/download folders may indicate malware"
+                        }
+                    })
+                }
+            } catch {}
+        }
+    } catch {}
+
+    # 2d. High-entropy executable names (randomized names)
+    try {
+        foreach ($p in $procs) {
+            if (-not $p.Name) { continue }
+            $name = [System.IO.Path]::GetFileNameWithoutExtension($p.Name)
+            if ($name.Length -lt 6) { continue }
+            $consonants = ($name.ToLower().ToCharArray() | Where-Object { $_ -match '[bcdfghjklmnpqrstvwxyz]' }).Count
+            $ratio = $consonants / $name.Length
+            $hasDigitMix = $name -match '[a-zA-Z].*\d.*[a-zA-Z]|\d.*[a-zA-Z].*\d'
+            if (($ratio -gt 0.75 -and $name.Length -gt 7) -or ($hasDigitMix -and $name.Length -gt 10 -and $ratio -gt 0.5)) {
+                if ($name -match '^(svchost|csrss|conhost|dllhost|taskhostw?|sihost|RuntimeBroker|SearchHost|SecurityHealth|msedgewebview|WindowsTerminal)') { continue }
+                if ($p.ExecutablePath -and $p.ExecutablePath -match '\\(Windows|Program Files|Microsoft)\\') { continue }
+                [void]$findings.Add(@{
+                    Engine = "Heuristic"; Risk = "MED"; Process = $p.Name
+                    Finding = "Process name appears randomized (possible malware)"
+                    Details = [ordered]@{
+                        "Process" = "$($p.Name) (PID: $($p.ProcessId))"
+                        "Path" = "$($p.ExecutablePath)"
+                        "Name Entropy" = "Consonant ratio: $([math]::Round($ratio, 2)), Length: $($name.Length)"
+                        "Analysis" = "Malware often uses random-looking process names to avoid detection"
+                    }
+                })
+            }
+        }
+    } catch {}
+
+    # 2e. Processes with no executable on disk (fileless/deleted)
+    try {
+        foreach ($p in $procs) {
+            if (-not $p.ExecutablePath) { continue }
+            if (-not (Test-Path $p.ExecutablePath)) {
+                [void]$findings.Add(@{
+                    Engine = "Heuristic"; Risk = "HIGH"; Process = $p.Name
+                    Finding = "Running process has no file on disk (fileless/deleted)"
+                    Details = [ordered]@{
+                        "Process" = "$($p.Name) (PID: $($p.ProcessId))"
+                        "Expected Path" = "$($p.ExecutablePath)"
+                        "Analysis" = "Executable was deleted after launch or running from memory only - strong indicator of malware"
+                    }
+                })
+            }
+        }
+    } catch {}
+
+    # 2f. Masquerading detection (system process names from wrong locations)
+    try {
+        $sysProcs = @{
+            "svchost.exe"  = "C:\Windows\System32\svchost.exe"
+            "csrss.exe"    = "C:\Windows\System32\csrss.exe"
+            "lsass.exe"    = "C:\Windows\System32\lsass.exe"
+            "services.exe" = "C:\Windows\System32\services.exe"
+            "smss.exe"     = "C:\Windows\System32\smss.exe"
+            "wininit.exe"  = "C:\Windows\System32\wininit.exe"
+            "winlogon.exe" = "C:\Windows\System32\winlogon.exe"
+            "explorer.exe" = "C:\Windows\explorer.exe"
+        }
+        foreach ($p in $procs) {
+            if ($sysProcs.ContainsKey($p.Name.ToLower()) -and $p.ExecutablePath) {
+                $expected = $sysProcs[$p.Name.ToLower()]
+                if ($p.ExecutablePath -ne $expected -and $p.ExecutablePath -ne $expected.Replace("System32","SysWOW64")) {
+                    [void]$findings.Add(@{
+                        Engine = "Heuristic"; Risk = "CRIT"; Process = $p.Name
+                        Finding = "Process masquerading: $($p.Name) running from wrong location"
+                        Details = [ordered]@{
+                            "Process" = "$($p.Name) (PID: $($p.ProcessId))"
+                            "Actual Path" = "$($p.ExecutablePath)"
+                            "Expected Path" = $expected
+                            "Analysis" = "System process running from non-standard location is a strong indicator of malware masquerading"
+                        }
+                    })
+                }
+            }
+        }
+    } catch {}
+
+    # ── Add findings to UI ──
+    foreach ($f in $findings) {
+        Add-AiThreat -Engine $f.Engine -Risk $f.Risk -ProcessName $f.Process -Finding $f.Finding -Details $f.Details
+    }
+
+    $script:AiLastScanTime = Get-Date
+    $statusText = "Last scan: $(Get-Date -Format 'HH:mm:ss') | Engines: Behavioral Analysis"
+    if ($hhAvailable) { $statusText += " + HollowsHunter" }
+    $statusText += " | Findings: $($findings.Count)"
+
+    try { if ($script:AiScanStatusLabel) { $script:AiScanStatusLabel.Text = $statusText } } catch {}
+    try { if ($script:AiStatusLabel) { $script:AiStatusLabel.Text = $statusText } } catch {}
+
+    if ($script:AiThreatCount -eq 0) {
+        try { if ($script:AiCountLabel) { $script:AiCountLabel.Text = "No threats detected"; $script:AiCountLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 100) } } catch {}
+    } else {
+        try { if ($script:AiCountLabel) { $script:AiCountLabel.Text = "$($script:AiThreatCount) threat(s) detected"; $script:AiCountLabel.ForeColor = [System.Drawing.Color]::FromArgb(255, 80, 90) } } catch {}
+    }
+
+    if (-not $hhAvailable) {
+        try { if ($script:AiScanStatusLabel) { $script:AiScanStatusLabel.Text += "  [HollowsHunter not found - place hollows_hunter.exe in Tools\ for memory scanning]" } } catch {}
+    }
 
     $script:AiScanRunning = $false
-    try {
-        if ($script:AiScanBtn) { $script:AiScanBtn.Enabled = $true }
-    } catch {}
+    try { if ($script:AiScanBtn) { $script:AiScanBtn.Enabled = $true } } catch {}
 }
 
 # ============================================================================
@@ -2677,6 +2639,55 @@ try {
     $script:AiThreatDetailContent.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
     $aiDetailBox.Controls.Add($script:AiThreatDetailContent)
 
+    # Kill Process button for AI Threats
+    $script:AiKillBtn = New-Object System.Windows.Forms.Button
+    $script:AiKillBtn.Text = "Kill Process"
+    $script:AiKillBtn.Size = New-Object System.Drawing.Size(200, 34)
+    $script:AiKillBtn.FlatStyle = "Flat"
+    $script:AiKillBtn.BackColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
+    $script:AiKillBtn.ForeColor = [System.Drawing.Color]::White
+    $script:AiKillBtn.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $script:AiKillBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $script:AiKillBtn.Visible = $false
+    $script:AiKillBtn.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
+    $script:AiKillBtn.Add_Click({
+        try {
+            $info = $this.Tag
+            if (-not $info) { return }
+            $pid = $info.PID
+            $procName = $info.ProcessName
+
+            $confirm = [System.Windows.Forms.MessageBox]::Show(
+                "Process: $procName`nPID: $pid`n`nAre you sure you want to kill this process?",
+                "Kill Process - Confirm",
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Question
+            )
+            if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+
+            try {
+                Stop-Process -Id $pid -Force -ErrorAction Stop
+                [System.Windows.Forms.MessageBox]::Show("Process $procName (PID: $pid) terminated.", "Success", "OK", "Information")
+                $this.Enabled = $false
+                $this.Text = "Process Killed"
+            } catch {
+                # Try with UAC elevation
+                $tmpScript = Join-Path $env:TEMP "kill_proc_$pid.ps1"
+                "Stop-Process -Id $pid -Force" | Set-Content $tmpScript -Encoding UTF8
+                try {
+                    Start-Process powershell -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File', $tmpScript) -Verb RunAs -Wait
+                    [System.Windows.Forms.MessageBox]::Show("Process $procName (PID: $pid) terminated (elevated).", "Success", "OK", "Information")
+                    $this.Enabled = $false
+                    $this.Text = "Process Killed"
+                } catch {
+                    [System.Windows.Forms.MessageBox]::Show("Failed to kill process: $_", "Error", "OK", "Error")
+                }
+                try { Remove-Item $tmpScript -Force -ErrorAction SilentlyContinue } catch {}
+            }
+        } catch {}
+    })
+    $aiDetailBox.Controls.Add($script:AiKillBtn)
+
     # Selection handler
     $aiThreatLv.Add_SelectedIndexChanged({
         try {
@@ -2715,6 +2726,28 @@ try {
                 $vl.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
                 $script:AiThreatDetailContent.Controls.Add($vl)
                 $dy += 22
+            }
+
+            # Show Kill button if finding has PID
+            $script:AiKillBtn.Visible = $false
+            $pidStr = $td.Details["PID"]
+            if (-not $pidStr) {
+                # Extract PID from "ProcessName (PID: 1234)" format
+                $procField = $td.Details["Process"]
+                if ($procField -and $procField -match 'PID:\s*(\d+)') { $pidStr = $Matches[1] }
+                $childField = $td.Details["Child Process"]
+                if (-not $pidStr -and $childField -and $childField -match 'PID:\s*(\d+)') { $pidStr = $Matches[1] }
+            }
+            if ($pidStr) {
+                $pidInt = [int]$pidStr
+                $pName = $td.ProcessName
+                if (-not $pName) { $pName = $td.Details["Process"] }
+                $script:AiKillBtn.Tag = @{ PID = $pidInt; ProcessName = $pName }
+                $script:AiKillBtn.Text = "Kill Process (PID: $pidInt)"
+                $script:AiKillBtn.Enabled = $true
+                $script:AiKillBtn.Location = New-Object System.Drawing.Point(15, ($dy + 48))
+                $script:AiKillBtn.Visible = $true
+                $script:AiKillBtn.BringToFront()
             }
         } catch {}
     })
