@@ -614,7 +614,7 @@ function Show-Dashboard {
     }
 
     $script:LblAlerts      = New-StatCard $statusPage 25  65  "Total Alerts"       "valAlerts"   $colRed    "$([char]0x26A0)" -onClick { try { & $script:SwitchPageFn "Alerts" } catch {} }
-    $script:LblConnections = New-StatCard $statusPage 220 65  "Connections"        "valConns"    $colAccent "$([char]0x1F310)" -onClick {
+    $script:LblConnections = New-StatCard $statusPage 220 65  "Connections"        "valConns"    $colAccent "$([char]0x21C4)" -onClick {
         try {
             $conns = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
                 Where-Object { $_.RemoteAddress -notmatch '^(127\.|0\.|::1|::$)' } |
@@ -1022,9 +1022,11 @@ function Show-Dashboard {
     })
     $statusPage.Controls.Add($recentList)
 
+
     # ═══════════════════════════════════════════════════════════════
     #  PAGE 2: ALERTS (full history + detail panel)
     # ═══════════════════════════════════════════════════════════════
+  try {
     $alertsPage = $pages["Alerts"]
 
     $alertsTitle = New-Object System.Windows.Forms.Label
@@ -1363,9 +1365,12 @@ function Show-Dashboard {
         } catch {}
     }
 
+  } catch { Write-Host "[!] Alerts page error: $_" -ForegroundColor Red }
+
     # ═══════════════════════════════════════════════════════════════
     #  PAGE 3: SETTINGS (notification preferences - live edit)
     # ═══════════════════════════════════════════════════════════════
+  try {
     $settingsPage = $pages["Settings"]
 
     $settingsTitle = New-Object System.Windows.Forms.Label
@@ -1495,9 +1500,12 @@ function Show-Dashboard {
     $savedLabel.ForeColor = $colGreen
     $settingsPage.Controls.Add($savedLabel)
 
+  } catch { Write-Host "[!] Settings page error: $_" -ForegroundColor Red }
+
     # ═══════════════════════════════════════════════════════════════
     #  PAGE 4: LOGS (open/view log files)
     # ═══════════════════════════════════════════════════════════════
+  try {
     $logsPage = $pages["Logs"]
 
     $logsTitle = New-Object System.Windows.Forms.Label
@@ -1627,6 +1635,7 @@ function Show-Dashboard {
 
         $ly += 50
     }
+  } catch { Write-Host "[!] Logs page error: $_" -ForegroundColor Red }
 
     # ── Status updater timer ──
     $script:DashTimer = New-Object System.Windows.Forms.Timer
@@ -3095,6 +3104,9 @@ function Start-Monitoring {
         } catch {}
     })
     $script:SignalTimer.Start()
+
+    # Auto-open dashboard on first launch
+    try { Show-Dashboard } catch { Write-Host "[!] Auto-open dashboard error: $_" -ForegroundColor Red }
 
     # Run the Windows Forms message loop (keeps UI responsive)
     [System.Windows.Forms.Application]::Run()
