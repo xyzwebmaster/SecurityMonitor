@@ -419,6 +419,31 @@ function Start-AiThreatScan {
     $procMap = @{}
     foreach ($p in $procs) { $procMap[$p.ProcessId] = $p }
 
+    # Build self-exclusion set: own PID + all ancestor/child PIDs belonging to SecurityMonitor
+    $selfPids = [System.Collections.Generic.HashSet[int]]::new()
+    [void]$selfPids.Add($PID)
+    # Add parent chain (Launcher → PowerShell hosting SecurityMonitor)
+    $curPid = $PID
+    for ($i = 0; $i -lt 5; $i++) {
+        $parent = $procMap[$curPid]
+        if (-not $parent) { break }
+        $ppid = $parent.ParentProcessId
+        if ($ppid -le 4) { break }
+        [void]$selfPids.Add($ppid)
+        $curPid = $ppid
+    }
+    # Add child processes spawned by us
+    foreach ($p in $procs) {
+        if ($selfPids.Contains($p.ParentProcessId)) { [void]$selfPids.Add($p.ProcessId) }
+    }
+    # Second pass for grandchildren
+    foreach ($p in $procs) {
+        if ($selfPids.Contains($p.ParentProcessId)) { [void]$selfPids.Add($p.ProcessId) }
+    }
+    # Also whitelist by command line containing our script path
+    $selfScriptPath = $PSCommandPath
+    if (-not $selfScriptPath) { $selfScriptPath = "SecurityMonitor.ps1" }
+
     # 2a. Suspicious parent-child relationships
     try {
         $suspParentChild = @(
@@ -429,6 +454,7 @@ function Start-AiThreatScan {
             @{ Parent = "explorer.exe";  Children = @("mshta.exe","regsvr32.exe","rundll32.exe") }
         )
         foreach ($p in $procs) {
+            if ($selfPids.Contains($p.ProcessId)) { continue }
             $parentProc = $procMap[$p.ParentProcessId]
             if (-not $parentProc) { continue }
             foreach ($rule in $suspParentChild) {
@@ -452,6 +478,8 @@ function Start-AiThreatScan {
     try {
         foreach ($p in $procs) {
             if (-not $p.CommandLine) { continue }
+            if ($selfPids.Contains($p.ProcessId)) { continue }
+            if ($p.CommandLine -match [regex]::Escape($selfScriptPath)) { continue }
             $cmd = $p.CommandLine
             $suspPatterns = @()
             $analysis = ""
@@ -502,6 +530,7 @@ function Start-AiThreatScan {
     try {
         foreach ($p in $procs) {
             if (-not $p.ExecutablePath) { continue }
+            if ($selfPids.Contains($p.ProcessId)) { continue }
             $exePath = $p.ExecutablePath
             if ($exePath -notmatch '\\Temp\\|\\AppData\\Local\\Temp\\|\\Downloads\\|\\ProgramData\\[^\\]+\.exe$|\\Users\\Public\\') { continue }
             try {
@@ -525,6 +554,7 @@ function Start-AiThreatScan {
     try {
         foreach ($p in $procs) {
             if (-not $p.Name) { continue }
+            if ($selfPids.Contains($p.ProcessId)) { continue }
             $name = [System.IO.Path]::GetFileNameWithoutExtension($p.Name)
             if ($name.Length -lt 6) { continue }
             $consonants = ($name.ToLower().ToCharArray() | Where-Object { $_ -match '[bcdfghjklmnpqrstvwxyz]' }).Count
@@ -551,6 +581,7 @@ function Start-AiThreatScan {
     try {
         foreach ($p in $procs) {
             if (-not $p.ExecutablePath) { continue }
+            if ($selfPids.Contains($p.ProcessId)) { continue }
             if (-not (Test-Path $p.ExecutablePath)) {
                 [void]$findings.Add(@{
                     Engine = "Heuristic"; Risk = "HIGH"; Process = $p.Name
@@ -578,6 +609,7 @@ function Start-AiThreatScan {
             "explorer.exe" = "C:\Windows\explorer.exe"
         }
         foreach ($p in $procs) {
+            if ($selfPids.Contains($p.ProcessId)) { continue }
             if ($sysProcs.ContainsKey($p.Name.ToLower()) -and $p.ExecutablePath) {
                 $expected = $sysProcs[$p.Name.ToLower()]
                 if ($p.ExecutablePath -ne $expected -and $p.ExecutablePath -ne $expected.Replace("System32","SysWOW64")) {
