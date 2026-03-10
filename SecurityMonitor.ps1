@@ -1996,14 +1996,88 @@ function Initialize-TrayIcon {
 
     $script:TrayIcon.ContextMenuStrip = $contextMenu
 
-    # Click on balloon tip: open ipinfo.io for IP + show dashboard alerts tab
+    # Click on balloon tip: smart action based on alert category
     $script:TrayIcon.Add_BalloonTipClicked({
-        if ($null -ne $script:LastAlertData) {
-            if ($script:LastAlertData.RemoteIP) {
-                try { Start-Process "https://ipinfo.io/$($script:LastAlertData.RemoteIP)" } catch {}
+        if ($null -eq $script:LastAlertData) { return }
+        $ad = $script:LastAlertData
+        try {
+            switch ($ad.Category) {
+                "Connection" {
+                    # Open IP lookup in browser
+                    if ($ad.RemoteIP) {
+                        Start-Process "https://ipinfo.io/$($ad.RemoteIP)"
+                    }
+                }
+                "Process" {
+                    # Open file location in Explorer
+                    $path = $ad.Details["Process Path"]
+                    if (-not $path) { $path = $ad.Details["Path"] }
+                    if ($path -and (Test-Path $path)) {
+                        Start-Process explorer.exe "/select,`"$path`""
+                    } elseif ($path) {
+                        $dir = Split-Path $path -Parent -ErrorAction SilentlyContinue
+                        if ($dir -and (Test-Path $dir)) { Start-Process explorer.exe "`"$dir`"" }
+                    }
+                }
+                "Registry Tampering" {
+                    # Open regedit at the registry path
+                    $regPath = $ad.Details["Registry Path"]
+                    if ($regPath) {
+                        # Convert PS registry path to regedit format
+                        $regeditPath = $regPath -replace '^HKLM:\\', 'HKEY_LOCAL_MACHINE\' -replace '^HKCU:\\', 'HKEY_CURRENT_USER\' -replace '^HKCR:\\', 'HKEY_CLASSES_ROOT\'
+                        # Set regedit LastKey so it opens at the right location
+                        try {
+                            Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Applets\Regedit" -Name "LastKey" -Value $regeditPath -ErrorAction SilentlyContinue
+                        } catch {}
+                        Start-Process regedit.exe
+                    }
+                }
+                "Firmware" {
+                    # Open firmware file location in Explorer
+                    $filePath = $ad.Details["File Path"]
+                    if ($filePath -and (Test-Path $filePath)) {
+                        Start-Process explorer.exe "/select,`"$filePath`""
+                    } elseif ($filePath) {
+                        $dir = Split-Path $filePath -Parent -ErrorAction SilentlyContinue
+                        if ($dir -and (Test-Path $dir)) { Start-Process explorer.exe "`"$dir`"" }
+                    }
+                }
+                "Hosts" {
+                    # Open hosts file in Notepad
+                    Start-Process notepad.exe "$env:SystemRoot\System32\drivers\etc\hosts"
+                }
+                "RDP" {
+                    # Open System Properties > Remote tab
+                    Start-Process SystemPropertiesRemote.exe
+                }
+                "Security" {
+                    # Open Event Viewer at Security log
+                    Start-Process eventvwr.msc "/s"
+                }
+                "Listener" {
+                    # Show current listening ports in a popup
+                    $listeners = netstat -ano | Select-String "LISTENING" | Select-Object -First 25
+                    $text = ($listeners | ForEach-Object { $_.ToString().Trim() }) -join "`n"
+                    [System.Windows.Forms.MessageBox]::Show($text, "Listening Ports", "OK", "Information")
+                }
+                { $_ -eq "Driver" -or $_ -eq "Service" } {
+                    # Open Services management console
+                    Start-Process services.msc
+                }
+                "Registry" {
+                    # Open regedit for startup key changes
+                    try {
+                        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Applets\Regedit" -Name "LastKey" -Value "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -ErrorAction SilentlyContinue
+                    } catch {}
+                    Start-Process regedit.exe
+                }
+                default {
+                    # Fallback: open dashboard Alerts tab
+                }
             }
-            try { Show-Dashboard -OpenTab "Alerts" } catch {}
-        }
+        } catch {}
+        # Always open dashboard Alerts tab
+        try { Show-Dashboard -OpenTab "Alerts" } catch {}
     })
 }
 
@@ -2026,13 +2100,24 @@ function Send-ToastNotification {
         try {
             $script:TrayIcon.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Warning
             $script:TrayIcon.BalloonTipTitle = "SecurityMonitor: $Title"
-            $tipText = $Message
-            if ($AlertData -and $AlertData.RemoteIP) {
-                $tipText = "$Message`nClick to lookup IP on ipinfo.io"
-            } else {
-                $tipText = "$Message`nClick to view details"
-            }
-            $script:TrayIcon.BalloonTipText = $tipText
+            # Smart click hint based on category
+            $clickHint = if ($AlertData) {
+                switch ($AlertData.Category) {
+                    "Connection"        { "Click to lookup IP on ipinfo.io" }
+                    "Process"           { "Click to open file location" }
+                    "Registry Tampering" { "Click to open Registry Editor" }
+                    "Firmware"          { "Click to open file location" }
+                    "Hosts"             { "Click to open hosts file" }
+                    "RDP"               { "Click to open Remote Desktop settings" }
+                    "Security"          { "Click to open Event Viewer" }
+                    "Listener"          { "Click to view listening ports" }
+                    "Driver"            { "Click to open Services" }
+                    "Service"           { "Click to open Services" }
+                    "Registry"          { "Click to open Registry Editor" }
+                    default             { "Click to view details" }
+                }
+            } else { "Click to view details" }
+            $script:TrayIcon.BalloonTipText = "$Message`n$clickHint"
             $script:TrayIcon.ShowBalloonTip(8000)
             return $true
         } catch {}
@@ -2044,8 +2129,14 @@ function Send-ToastNotification {
         [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
 
         $launchUrl = ""
-        if ($AlertData -and $AlertData.RemoteIP) {
-            $launchUrl = "https://ipinfo.io/$($AlertData.RemoteIP)"
+        if ($AlertData) {
+            switch ($AlertData.Category) {
+                "Connection"  { if ($AlertData.RemoteIP) { $launchUrl = "https://ipinfo.io/$($AlertData.RemoteIP)" } }
+                "Hosts"       { $launchUrl = "$env:SystemRoot\System32\drivers\etc\hosts" }
+                "RDP"         { $launchUrl = "ms-settings:remotedesktop" }
+                "Security"    { $launchUrl = "eventvwr.msc" }
+                default       { if ($AlertData.RemoteIP) { $launchUrl = "https://ipinfo.io/$($AlertData.RemoteIP)" } }
+            }
         }
 
         $template = @"
