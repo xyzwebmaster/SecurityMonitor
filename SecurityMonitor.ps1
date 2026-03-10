@@ -2818,6 +2818,12 @@ function Send-Alert {
         [string]$RemoteIP = "",
         [hashtable]$ExtraDetails = @{}
     )
+    # Skip entirely if category is disabled in settings
+    if ($Category -ne "" -and -not (Test-NotifyEnabled -Category $Category)) {
+        Write-Log "$Title - $Message [FILTERED]" -Level "ALERT"
+        return
+    }
+
     $script:AlertCount++
     Write-Log "$Title - $Message" -Level "ALERT"
 
@@ -2857,18 +2863,11 @@ function Send-Alert {
         $script:RenderedAlertCount = [Math]::Max(0, $script:RenderedAlertCount - 1)
     }
 
-    $shouldNotify = $true
-    if ($Category -ne "" -and -not (Test-NotifyEnabled -Category $Category)) {
-        $shouldNotify = $false
-    }
-
-    if ($shouldNotify) {
-        $tipIcon = if ($severity -eq "CRIT") { "Error" } elseif ($severity -match "HIGH|MED") { "Warning" } else { "Info" }
-        if ($showThreat) {
-            Send-ToastNotification -Title "[$severity] $Title" -Message $Message -AlertData $alertData
-        } else {
-            Send-ToastNotification -Title $Title -Message $Message -AlertData $alertData
-        }
+    $tipIcon = if ($severity -eq "CRIT") { "Error" } elseif ($severity -match "HIGH|MED") { "Warning" } else { "Info" }
+    if ($showThreat) {
+        Send-ToastNotification -Title "[$severity] $Title" -Message $Message -AlertData $alertData
+    } else {
+        Send-ToastNotification -Title $Title -Message $Message -AlertData $alertData
     }
 
     if (-not $Silent) {
@@ -2877,7 +2876,7 @@ function Send-Alert {
         } else {
             Write-Alert "$Title - $Message"
         }
-        if ($shouldNotify -and $showThreat) {
+        if ($showThreat) {
             try {
                 if ($severity -eq "CRIT") { [System.Console]::Beep(800, 200); [System.Console]::Beep(1200, 200); [System.Console]::Beep(1600, 300) }
                 elseif ($severity -eq "HIGH") { [System.Console]::Beep(1000, 300); [System.Console]::Beep(1500, 300) }
