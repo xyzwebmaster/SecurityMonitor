@@ -326,8 +326,12 @@ function Show-Dashboard {
     $sidebarSep.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
     $sidebar.Controls.Add($sidebarSep)
 
-    # ── Sidebar collapse/expand toggle ──
+    # ── Sidebar collapse/expand toggle (button created now, click handler added after navButtons) ──
     $script:SidebarExpanded = $true
+    $script:SidebarPanel = $sidebar
+    $script:LogoLabel = $logoLabel
+    $script:VerLabel = $verLabel
+    $script:SidebarSep = $sidebarSep
     $collapseBtn = New-Object System.Windows.Forms.Button
     $collapseBtn.Text = "<<"
     $collapseBtn.Dock = "Bottom"
@@ -338,40 +342,6 @@ function Show-Dashboard {
     $collapseBtn.ForeColor = $colTextDim
     $collapseBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     $collapseBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $collapseBtn.Add_Click({
-        if ($script:SidebarExpanded) {
-            # Collapse
-            $sidebar.Width = 50
-            $logoLabel.Visible = $false
-            $verLabel.Visible = $false
-            $sidebarSep.Visible = $false
-            foreach ($nb in $navButtons) {
-                $nb.Size = New-Object System.Drawing.Size(34, 34)
-                $nb.Location = New-Object System.Drawing.Point(8, $nb.Location.Y)
-                $nb.Text = $nb.Tag.Substring(0,1)
-                $nb.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-            }
-            $collapseBtn.Text = ">>"
-            $script:SidebarExpanded = $false
-        } else {
-            # Expand
-            $sidebar.Width = 200
-            $logoLabel.Visible = $true
-            $verLabel.Visible = $true
-            $sidebarSep.Visible = $true
-            $navIdx = 0
-            $navTexts = @("[S]   Status", "[A]   Alerts", "[C]   Settings", "[L]   Logs")
-            foreach ($nb in $navButtons) {
-                $nb.Size = New-Object System.Drawing.Size(184, 40)
-                $nb.Location = New-Object System.Drawing.Point(8, $nb.Location.Y)
-                $nb.Text = $navTexts[$navIdx]
-                $nb.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
-                $navIdx++
-            }
-            $collapseBtn.Text = "<<"
-            $script:SidebarExpanded = $true
-        }
-    })
     $sidebar.Controls.Add($collapseBtn)
 
     # ── Content area (right side) ──
@@ -421,6 +391,43 @@ function Show-Dashboard {
         $navButtons += $btn
         $navY += 44
     }
+    $script:NavButtons = $navButtons
+
+    # ── Sidebar collapse click handler (now navButtons is populated) ──
+    $collapseBtn.Add_Click({
+        try {
+            if ($script:SidebarExpanded) {
+                $script:SidebarPanel.Width = 50
+                $script:LogoLabel.Visible = $false
+                $script:VerLabel.Visible = $false
+                $script:SidebarSep.Visible = $false
+                foreach ($nb in $script:NavButtons) {
+                    $nb.Size = New-Object System.Drawing.Size(34, 34)
+                    $nb.Location = New-Object System.Drawing.Point(8, $nb.Location.Y)
+                    $nb.Text = $nb.Tag.Substring(0,1)
+                    $nb.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+                }
+                $this.Text = ">>"
+                $script:SidebarExpanded = $false
+            } else {
+                $script:SidebarPanel.Width = 200
+                $script:LogoLabel.Visible = $true
+                $script:VerLabel.Visible = $true
+                $script:SidebarSep.Visible = $true
+                $navIdx = 0
+                $navTexts = @("[S]   Status", "[A]   Alerts", "[C]   Settings", "[L]   Logs")
+                foreach ($nb in $script:NavButtons) {
+                    $nb.Size = New-Object System.Drawing.Size(184, 40)
+                    $nb.Location = New-Object System.Drawing.Point(8, $nb.Location.Y)
+                    $nb.Text = $navTexts[$navIdx]
+                    $nb.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+                    $navIdx++
+                }
+                $this.Text = "<<"
+                $script:SidebarExpanded = $true
+            }
+        } catch {}
+    })
 
     # Navigation switching scriptblock (stored in script scope so closures can reach it)
     $script:SwitchPageFn = {
