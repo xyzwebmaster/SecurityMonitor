@@ -948,7 +948,7 @@ function Show-Dashboard {
                     $accentBrush.Dispose()
                 }
 
-                # Text color
+                # Text color per column: 0=Time, 1=Severity, 2=Category, 3=Title, 4=Message
                 if ($isSelected) {
                     $txtColor = [System.Drawing.Color]::White
                 } else {
@@ -956,9 +956,12 @@ function Show-Dashboard {
                         # Time column - soft white
                         $txtColor = [System.Drawing.Color]::FromArgb(180, 180, 200)
                     } elseif ($e.ColumnIndex -eq 1) {
-                        # Category - accent colored
+                        # Severity - use item ForeColor (severity-coded)
                         $txtColor = $e.Item.ForeColor
                     } elseif ($e.ColumnIndex -eq 2) {
+                        # Category - accent colored
+                        $txtColor = $e.Item.ForeColor
+                    } elseif ($e.ColumnIndex -eq 3) {
                         # Title - bright white
                         $txtColor = [System.Drawing.Color]::FromArgb(240, 240, 250)
                     } else {
@@ -970,6 +973,8 @@ function Show-Dashboard {
                 $cellFont = $e.Item.Font
                 if ($e.ColumnIndex -eq 0) {
                     $cellFont = New-Object System.Drawing.Font("Consolas", 8.5)
+                } elseif ($e.ColumnIndex -eq 1) {
+                    $cellFont = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
                 }
                 $textRect = New-Object System.Drawing.RectangleF(($e.Bounds.X + 8), $e.Bounds.Y, ($e.Bounds.Width - 10), $e.Bounds.Height)
                 $sf = New-Object System.Drawing.StringFormat
@@ -980,7 +985,7 @@ function Show-Dashboard {
                 $e.Graphics.DrawString($text, $cellFont, $txtBrush, $textRect, $sf)
                 $sf.Dispose()
                 $txtBrush.Dispose()
-                if ($e.ColumnIndex -eq 0) { $cellFont.Dispose() }
+                if ($e.ColumnIndex -in @(0, 1)) { $cellFont.Dispose() }
 
                 # Subtle separator line between rows
                 $sepPen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(40, 40, 60), 1)
@@ -990,6 +995,19 @@ function Show-Dashboard {
                 $e.DrawDefault = $true
             }
         })
+    }
+
+    # ── Auto-resize ListView columns proportionally ──
+    # Column proportions: Time=14%, Severity=8%, Category=13%, Title=26%, Message=39%
+    $script:LvColProportions = @(0.14, 0.08, 0.13, 0.26, 0.39)
+    function Resize-ListViewColumns {
+        param([System.Windows.Forms.ListView]$lv)
+        $w = $lv.ClientSize.Width - 2
+        if ($w -lt 200) { return }
+        $props = $script:LvColProportions
+        for ($i = 0; $i -lt $lv.Columns.Count -and $i -lt $props.Count; $i++) {
+            $lv.Columns[$i].Width = [Math]::Max(40, [int]($w * $props[$i]))
+        }
     }
 
     # ── System Health Gauges ──
@@ -1079,10 +1097,12 @@ function Show-Dashboard {
     $recentList.Size = New-Object System.Drawing.Size(770, 170)
     $recentList.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
     Style-ListView $recentList
-    [void]$recentList.Columns.Add("Time", 120)
+    [void]$recentList.Columns.Add("Time", 110)
+    [void]$recentList.Columns.Add("Severity", 65)
     [void]$recentList.Columns.Add("Category", 100)
-    [void]$recentList.Columns.Add("Title", 200)
-    [void]$recentList.Columns.Add("Message", 330)
+    [void]$recentList.Columns.Add("Title", 185)
+    [void]$recentList.Columns.Add("Message", 290)
+    $recentList.Add_Resize({ try { Resize-ListViewColumns $this } catch {} })
     $recentList.Add_DoubleClick({
         try {
             $sel = $this.SelectedItems
@@ -1301,6 +1321,7 @@ function Show-Dashboard {
                     default { [System.Drawing.Color]::FromArgb(140, 140, 160) }
                 }
                 $item = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
+                [void]$item.SubItems.Add($a.Severity)
                 [void]$item.SubItems.Add($a.Category)
                 [void]$item.SubItems.Add($a.Title)
                 [void]$item.SubItems.Add($a.Message)
@@ -1321,10 +1342,12 @@ function Show-Dashboard {
     $alertListView.Size = New-Object System.Drawing.Size(770, 255)
     $alertListView.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
     Style-ListView $alertListView
-    [void]$alertListView.Columns.Add("Time", 120)
+    [void]$alertListView.Columns.Add("Time", 110)
+    [void]$alertListView.Columns.Add("Severity", 65)
     [void]$alertListView.Columns.Add("Category", 100)
-    [void]$alertListView.Columns.Add("Title", 200)
-    [void]$alertListView.Columns.Add("Message", 330)
+    [void]$alertListView.Columns.Add("Title", 185)
+    [void]$alertListView.Columns.Add("Message", 290)
+    $alertListView.Add_Resize({ try { Resize-ListViewColumns $this } catch {} })
     $alertsPage.Controls.Add($alertListView)
 
     # Detail panel below the list
@@ -2048,6 +2071,7 @@ try {
                 }
 
                 $item = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
+                [void]$item.SubItems.Add($a.Severity)
                 [void]$item.SubItems.Add($a.Category)
                 [void]$item.SubItems.Add($a.Title)
                 [void]$item.SubItems.Add($a.Message)
@@ -2056,6 +2080,7 @@ try {
                 [void]$script:AlertListView.Items.Insert(0, $item)
 
                 $r = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
+                [void]$r.SubItems.Add($a.Severity)
                 [void]$r.SubItems.Add($a.Category)
                 [void]$r.SubItems.Add($a.Title)
                 [void]$r.SubItems.Add($a.Message)
