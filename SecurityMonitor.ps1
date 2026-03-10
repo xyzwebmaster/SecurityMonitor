@@ -270,8 +270,9 @@ function Show-Dashboard {
             $script:DashboardForm.BringToFront()
             $script:DashboardForm.Activate()
             # Resume timers that were paused on hide
-            try { if ($script:DashTimer)  { $script:DashTimer.Start() } } catch {}
-            try { if ($script:PulseTimer) { $script:PulseTimer.Start() } } catch {}
+            try { if ($script:DashSlowTimer) { $script:DashSlowTimer.Start() } } catch {}
+            try { if ($script:DashTimer)     { $script:DashTimer.Start() } } catch {}
+            try { if ($script:PulseTimer)    { $script:PulseTimer.Start() } } catch {}
             if ($OpenTab -and $script:SwitchPageFn) {
                 try { & $script:SwitchPageFn $OpenTab } catch {}
             }
@@ -308,14 +309,17 @@ function Show-Dashboard {
     $form.MinimumSize = New-Object System.Drawing.Size(1050, 680)
     $form.FormBorderStyle = "Sizable"
     $form.TopMost = $false
+    # Enable double-buffering to reduce flicker
+    $form.GetType().GetProperty("DoubleBuffered", [System.Reflection.BindingFlags]"Instance,NonPublic").SetValue($form, $true, $null)
 
     # Minimize to tray instead of closing - pause timers to save resources
     $form.Add_FormClosing({
         param($s, $e)
         $e.Cancel = $true
         $s.Hide()
-        try { if ($script:DashTimer)  { $script:DashTimer.Stop() } } catch {}
-        try { if ($script:PulseTimer) { $script:PulseTimer.Stop() } } catch {}
+        try { if ($script:DashSlowTimer) { $script:DashSlowTimer.Stop() } } catch {}
+        try { if ($script:DashTimer)     { $script:DashTimer.Stop() } } catch {}
+        try { if ($script:PulseTimer)    { $script:PulseTimer.Stop() } } catch {}
     })
 
     $script:DashboardForm = $form
@@ -1444,6 +1448,7 @@ function Show-Dashboard {
             $script:DetailTitle.Text = "$($ad.Title)"
             $script:DetailTitle.ForeColor = [System.Drawing.Color]::FromArgb(220, 50, 60)
 
+            $script:DetailContent.SuspendLayout()
             $script:DetailContent.Controls.Clear()
             $dy = 0
             $contentWidth = $script:DetailContent.Width - 20
@@ -1478,6 +1483,8 @@ function Show-Dashboard {
             }
             $g.Dispose()
 
+            $script:DetailContent.ResumeLayout($true)
+
             # Auto-resize DetailContent panel to fit all rows
             $script:DetailContent.Height = [Math]::Max(80, $dy + 5)
 
@@ -1502,20 +1509,11 @@ function Show-Dashboard {
                 $script:IpLookupBtn.Tag = "$($ad.RemoteIP)"
                 $script:IpLookupBtn.Visible = $true
 
-                # Check if IP is already blocked
-                $blockRuleName = "SecurityMonitor_Block_$($ad.RemoteIP)_In"
-                $alreadyBlocked = Get-NetFirewallRule -DisplayName $blockRuleName -ErrorAction SilentlyContinue
                 $script:BlockIpBtn.Tag = "$($ad.RemoteIP)"
                 $script:BlockIpBtn.Location = New-Object System.Drawing.Point(15, $btnRow2Y)
-                if ($alreadyBlocked) {
-                    $script:BlockIpBtn.Text = "IP Already Blocked"
-                    $script:BlockIpBtn.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
-                    $script:BlockIpBtn.Enabled = $false
-                } else {
-                    $script:BlockIpBtn.Text = "Block IP (Firewall)"
-                    $script:BlockIpBtn.BackColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
-                    $script:BlockIpBtn.Enabled = $true
-                }
+                $script:BlockIpBtn.Text = "Block IP (Firewall)"
+                $script:BlockIpBtn.BackColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
+                $script:BlockIpBtn.Enabled = $true
                 $script:BlockIpBtn.Visible = $true
             } else {
                 $script:IpLookupBtn.Visible = $false
@@ -1600,6 +1598,8 @@ function Show-Dashboard {
             $total = $script:AlertHistory.Count
             if ($total -eq $script:RenderedAlertCount) { return }
 
+            $script:AlertListView.BeginUpdate()
+            $script:RecentList.BeginUpdate()
             for ($i = $script:RenderedAlertCount; $i -lt $total; $i++) {
                 $a = $script:AlertHistory[$i]
                 $itemColor = switch ($a.Severity) {
@@ -1631,6 +1631,8 @@ function Show-Dashboard {
                     $script:RecentList.Items.RemoveAt($script:RecentList.Items.Count - 1)
                 }
             }
+            $script:AlertListView.EndUpdate()
+            $script:RecentList.EndUpdate()
             $script:RenderedAlertCount = $total
             $script:AlertCountLabel.Text = "$total alerts"
             $script:LblAlerts.Text = "$($script:AlertCount)"
@@ -1910,132 +1912,150 @@ function Show-Dashboard {
   } catch { Write-Host "[!] Logs page error: $_" -ForegroundColor Red }
 
     # ── Status updater timer ──
-    $script:DashTimer = New-Object System.Windows.Forms.Timer
-    $script:DashTimer.Interval = 5000
-    $script:DashTimer.Add_Tick({
+    # ── Cached data for dashboard (updated by background job, read by UI timer) ──
+    $script:DashCache = @{
+        CpuLoad = 0; RamUsed = 0; DiskUsed = 0
+        DefenderOn = $null; FirewallOn = $null; UacOn = $null; RdpOff = $null
+        NetConns = 0; NetTopStr = "None"
+        LastUpdate = [datetime]::MinValue
+    }
+
+    # Heavy data collector - runs on a slower cycle to avoid freezing UI
+    $script:DashSlowTimer = New-Object System.Windows.Forms.Timer
+    $script:DashSlowTimer.Interval = 15000
+    $script:DashSlowTimer.Add_Tick({
         try {
-            if ($script:DashboardForm -and $script:DashboardForm.Visible -and -not $script:DashboardForm.IsDisposed) {
-                $script:LblAlerts.Text = "$($script:AlertCount)"
-                $script:LblConnections.Text = "$($script:KnownRemotes.Count)"
-                $script:LblProcesses.Text = "$($script:KnownProcesses.Count)"
-                $up = (Get-Date) - $script:StartTime
-                $script:LblUptime.Text = "{0:D2}h {1:D2}m" -f [int]$up.TotalHours, $up.Minutes
-                & $script:UpdateAlertsListFn
+            # CPU/RAM/Disk via WMI (these are SLOW - ~200-500ms each)
+            try {
+                $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue
+                if ($cpu) { $script:DashCache.CpuLoad = [math]::Round(($cpu | Measure-Object -Property LoadPercentage -Average).Average, 0) }
+            } catch {}
+            try {
+                $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+                if ($os) { $script:DashCache.RamUsed = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 0) }
+            } catch {}
+            try {
+                $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue
+                if ($disk) { $script:DashCache.DiskUsed = [math]::Round((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100, 0) }
+            } catch {}
 
-                # Update scan count
-                try { if ($script:ScanCountLabel) { $script:ScanCountLabel.Text = "$($script:MonitorCycle)" } } catch {}
+            # Security posture checks
+            try { $def = Get-MpComputerStatus -ErrorAction SilentlyContinue; $script:DashCache.DefenderOn = ($def -and $def.AntivirusEnabled) } catch { $script:DashCache.DefenderOn = $null }
+            try { $fw = Get-NetFirewallProfile -ErrorAction SilentlyContinue; $script:DashCache.FirewallOn = (($fw | Where-Object { $_.Enabled }).Count -eq $fw.Count) } catch { $script:DashCache.FirewallOn = $null }
+            try { $script:DashCache.UacOn = ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -ErrorAction SilentlyContinue).EnableLUA -eq 1) } catch {}
+            try { $script:DashCache.RdpOff = ((Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -ErrorAction SilentlyContinue).fDenyTSConnections -eq 1) } catch {}
 
-                # Update CPU/RAM/Disk gauges
-                try {
-                    $cpuLoad = [math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average, 0)
-                    $os = Get-CimInstance Win32_OperatingSystem
-                    $ramUsed = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 0)
-                    $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
-                    $diskUsed = [math]::Round((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100, 0)
-
-                    $maxW = 220
-                    $colGreen  = [System.Drawing.Color]::FromArgb(0, 200, 100)
-                    $colYellow = [System.Drawing.Color]::FromArgb(255, 220, 50)
-                    $colRed    = [System.Drawing.Color]::FromArgb(255, 60, 60)
-
-                    foreach ($gauge in @(@{G=$script:CpuGauge; V=$cpuLoad}, @{G=$script:RamGauge; V=$ramUsed}, @{G=$script:DiskGauge; V=$diskUsed})) {
-                        $pct = [math]::Max(0, [math]::Min(100, $gauge.V))
-                        $gauge.G.Label.Text = "$pct%"
-                        $gauge.G.Fill.Width = [math]::Round($maxW * $pct / 100)
-                        if ($pct -ge 90) { $gauge.G.Fill.BackColor = $colRed }
-                        elseif ($pct -ge 70) { $gauge.G.Fill.BackColor = $colYellow }
-                        else { $gauge.G.Fill.BackColor = $colGreen }
+            # Network summary
+            try {
+                $netConns = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+                    Where-Object { $_.RemoteAddress -notmatch '^(127\.|0\.|::1|::$)' }
+                $script:DashCache.NetConns = if ($netConns) { $netConns.Count } else { 0 }
+                $topProcs = $netConns | Group-Object -Property OwningProcess |
+                    Sort-Object Count -Descending | Select-Object -First 5 |
+                    ForEach-Object {
+                        $pName = (Get-Process -Id $_.Name -ErrorAction SilentlyContinue).ProcessName
+                        if (-not $pName) { $pName = "PID:$($_.Name)" }
+                        "$pName($($_.Count))"
                     }
-                } catch {}
-
-                # Update Security Posture indicators
-                try {
-                    $colGreenSp = [System.Drawing.Color]::FromArgb(0, 200, 100)
-                    $colRedSp   = [System.Drawing.Color]::FromArgb(255, 60, 60)
-                    $colGraySp  = [System.Drawing.Color]::FromArgb(80, 80, 80)
-
-                    # Defender
-                    try {
-                        $defStatus = Get-MpComputerStatus -ErrorAction SilentlyContinue
-                        if ($defStatus -and $defStatus.AntivirusEnabled) {
-                            $script:SecPostureDots["Defender"].BackColor = $colGreenSp
-                            $script:SecPostureLabels["Defender"].Text = "Defender: ON"
-                            $script:SecPostureLabels["Defender"].ForeColor = $colGreenSp
-                        } else {
-                            $script:SecPostureDots["Defender"].BackColor = $colRedSp
-                            $script:SecPostureLabels["Defender"].Text = "Defender: OFF"
-                            $script:SecPostureLabels["Defender"].ForeColor = $colRedSp
-                        }
-                    } catch {
-                        $script:SecPostureDots["Defender"].BackColor = $colGraySp
-                        $script:SecPostureLabels["Defender"].Text = "Defender: N/A"
-                    }
-
-                    # Firewall
-                    try {
-                        $fwProfiles = Get-NetFirewallProfile -ErrorAction SilentlyContinue
-                        $allEnabled = ($fwProfiles | Where-Object { $_.Enabled }).Count -eq $fwProfiles.Count
-                        if ($allEnabled) {
-                            $script:SecPostureDots["Firewall"].BackColor = $colGreenSp
-                            $script:SecPostureLabels["Firewall"].Text = "Firewall: ON"
-                            $script:SecPostureLabels["Firewall"].ForeColor = $colGreenSp
-                        } else {
-                            $script:SecPostureDots["Firewall"].BackColor = $colRedSp
-                            $script:SecPostureLabels["Firewall"].Text = "Firewall: PARTIAL"
-                            $script:SecPostureLabels["Firewall"].ForeColor = $colRedSp
-                        }
-                    } catch {
-                        $script:SecPostureDots["Firewall"].BackColor = $colGraySp
-                        $script:SecPostureLabels["Firewall"].Text = "Firewall: N/A"
-                    }
-
-                    # UAC
-                    try {
-                        $uacVal = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -ErrorAction SilentlyContinue).EnableLUA
-                        if ($uacVal -eq 1) {
-                            $script:SecPostureDots["UAC"].BackColor = $colGreenSp
-                            $script:SecPostureLabels["UAC"].Text = "UAC: Enabled"
-                            $script:SecPostureLabels["UAC"].ForeColor = $colGreenSp
-                        } else {
-                            $script:SecPostureDots["UAC"].BackColor = $colRedSp
-                            $script:SecPostureLabels["UAC"].Text = "UAC: DISABLED"
-                            $script:SecPostureLabels["UAC"].ForeColor = $colRedSp
-                        }
-                    } catch {}
-
-                    # RDP
-                    try {
-                        $rdpVal = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -ErrorAction SilentlyContinue).fDenyTSConnections
-                        if ($rdpVal -eq 1) {
-                            $script:SecPostureDots["RDP"].BackColor = $colGreenSp
-                            $script:SecPostureLabels["RDP"].Text = "RDP: Disabled"
-                            $script:SecPostureLabels["RDP"].ForeColor = $colGreenSp
-                        } else {
-                            $script:SecPostureDots["RDP"].BackColor = $colRedSp
-                            $script:SecPostureLabels["RDP"].Text = "RDP: ENABLED"
-                            $script:SecPostureLabels["RDP"].ForeColor = $colRedSp
-                        }
-                    } catch {}
-                } catch {}
-
-                # Update Network Activity summary
-                try {
-                    $netConns = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
-                        Where-Object { $_.RemoteAddress -notmatch '^(127\.|0\.|::1|::$)' }
-                    $totalConns = if ($netConns) { $netConns.Count } else { 0 }
-                    $topProcs = $netConns | Group-Object -Property OwningProcess |
-                        Sort-Object Count -Descending | Select-Object -First 5 |
-                        ForEach-Object {
-                            $pName = (Get-Process -Id $_.Name -ErrorAction SilentlyContinue).ProcessName
-                            if (-not $pName) { $pName = "PID:$($_.Name)" }
-                            "$pName($($_.Count))"
-                        }
-                    $topStr = if ($topProcs) { $topProcs -join "  |  " } else { "None" }
-                    $script:NetActivityLabel.Text = "Active: $totalConns connections   Top: $topStr"
-                } catch {}
-            }
+                $script:DashCache.NetTopStr = if ($topProcs) { $topProcs -join "  |  " } else { "None" }
+            } catch {}
+            $script:DashCache.LastUpdate = Get-Date
         } catch {}
     })
+
+    # Fast UI refresh timer - only reads cached data, never calls WMI/CIM
+    $script:DashTimer = New-Object System.Windows.Forms.Timer
+    $script:DashTimer.Interval = 2000
+    $script:DashTimer.Add_Tick({
+        try {
+            if (-not ($script:DashboardForm -and $script:DashboardForm.Visible -and -not $script:DashboardForm.IsDisposed)) { return }
+
+            # Lightweight label updates
+            $script:LblAlerts.Text = "$($script:AlertCount)"
+            $script:LblConnections.Text = "$($script:KnownRemotes.Count)"
+            $script:LblProcesses.Text = "$($script:KnownProcesses.Count)"
+            $up = (Get-Date) - $script:StartTime
+            $script:LblUptime.Text = "{0:D2}h {1:D2}m" -f [int]$up.TotalHours, $up.Minutes
+            & $script:UpdateAlertsListFn
+            try { if ($script:ScanCountLabel) { $script:ScanCountLabel.Text = "$($script:MonitorCycle)" } } catch {}
+
+            # Apply cached gauge data (instant - no WMI)
+            try {
+                $maxW = 220
+                $colGreen  = [System.Drawing.Color]::FromArgb(0, 200, 100)
+                $colYellow = [System.Drawing.Color]::FromArgb(255, 220, 50)
+                $colRed    = [System.Drawing.Color]::FromArgb(255, 60, 60)
+
+                foreach ($gauge in @(@{G=$script:CpuGauge; V=$script:DashCache.CpuLoad}, @{G=$script:RamGauge; V=$script:DashCache.RamUsed}, @{G=$script:DiskGauge; V=$script:DashCache.DiskUsed})) {
+                    $pct = [math]::Max(0, [math]::Min(100, $gauge.V))
+                    $gauge.G.Label.Text = "$pct%"
+                    $gauge.G.Fill.Width = [math]::Round($maxW * $pct / 100)
+                    if ($pct -ge 90) { $gauge.G.Fill.BackColor = $colRed }
+                    elseif ($pct -ge 70) { $gauge.G.Fill.BackColor = $colYellow }
+                    else { $gauge.G.Fill.BackColor = $colGreen }
+                }
+            } catch {}
+
+            # Apply cached security posture (instant - no cmdlets)
+            try {
+                $colGreenSp = [System.Drawing.Color]::FromArgb(0, 200, 100)
+                $colRedSp   = [System.Drawing.Color]::FromArgb(255, 60, 60)
+                $colGraySp  = [System.Drawing.Color]::FromArgb(80, 80, 80)
+
+                if ($script:DashCache.DefenderOn -eq $true) {
+                    $script:SecPostureDots["Defender"].BackColor = $colGreenSp
+                    $script:SecPostureLabels["Defender"].Text = "Defender: ON"
+                    $script:SecPostureLabels["Defender"].ForeColor = $colGreenSp
+                } elseif ($script:DashCache.DefenderOn -eq $false) {
+                    $script:SecPostureDots["Defender"].BackColor = $colRedSp
+                    $script:SecPostureLabels["Defender"].Text = "Defender: OFF"
+                    $script:SecPostureLabels["Defender"].ForeColor = $colRedSp
+                } else {
+                    $script:SecPostureDots["Defender"].BackColor = $colGraySp
+                    $script:SecPostureLabels["Defender"].Text = "Defender: N/A"
+                }
+
+                if ($script:DashCache.FirewallOn -eq $true) {
+                    $script:SecPostureDots["Firewall"].BackColor = $colGreenSp
+                    $script:SecPostureLabels["Firewall"].Text = "Firewall: ON"
+                    $script:SecPostureLabels["Firewall"].ForeColor = $colGreenSp
+                } elseif ($script:DashCache.FirewallOn -eq $false) {
+                    $script:SecPostureDots["Firewall"].BackColor = $colRedSp
+                    $script:SecPostureLabels["Firewall"].Text = "Firewall: PARTIAL"
+                    $script:SecPostureLabels["Firewall"].ForeColor = $colRedSp
+                } else {
+                    $script:SecPostureDots["Firewall"].BackColor = $colGraySp
+                    $script:SecPostureLabels["Firewall"].Text = "Firewall: N/A"
+                }
+
+                if ($script:DashCache.UacOn -eq $true) {
+                    $script:SecPostureDots["UAC"].BackColor = $colGreenSp
+                    $script:SecPostureLabels["UAC"].Text = "UAC: Enabled"
+                    $script:SecPostureLabels["UAC"].ForeColor = $colGreenSp
+                } elseif ($script:DashCache.UacOn -eq $false) {
+                    $script:SecPostureDots["UAC"].BackColor = $colRedSp
+                    $script:SecPostureLabels["UAC"].Text = "UAC: DISABLED"
+                    $script:SecPostureLabels["UAC"].ForeColor = $colRedSp
+                }
+
+                if ($script:DashCache.RdpOff -eq $true) {
+                    $script:SecPostureDots["RDP"].BackColor = $colGreenSp
+                    $script:SecPostureLabels["RDP"].Text = "RDP: Disabled"
+                    $script:SecPostureLabels["RDP"].ForeColor = $colGreenSp
+                } elseif ($script:DashCache.RdpOff -eq $false) {
+                    $script:SecPostureDots["RDP"].BackColor = $colRedSp
+                    $script:SecPostureLabels["RDP"].Text = "RDP: ENABLED"
+                    $script:SecPostureLabels["RDP"].ForeColor = $colRedSp
+                }
+            } catch {}
+
+            # Network activity from cache
+            try {
+                $script:NetActivityLabel.Text = "Active: $($script:DashCache.NetConns) connections   Top: $($script:DashCache.NetTopStr)"
+            } catch {}
+        } catch {}
+    })
+    $script:DashSlowTimer.Start()
     $script:DashTimer.Start()
 
     # Set open tab and switch page
@@ -3571,6 +3591,7 @@ try {
     if ($script:SignalTimer) { try { $script:SignalTimer.Stop(); $script:SignalTimer.Dispose() } catch {} }
     if ($script:MonitorTimer) { try { $script:MonitorTimer.Stop(); $script:MonitorTimer.Dispose() } catch {} }
     if ($script:PulseTimer) { try { $script:PulseTimer.Stop(); $script:PulseTimer.Dispose() } catch {} }
+    if ($script:DashSlowTimer) { try { $script:DashSlowTimer.Stop(); $script:DashSlowTimer.Dispose() } catch {} }
     if ($script:DashTimer) { try { $script:DashTimer.Stop(); $script:DashTimer.Dispose() } catch {} }
     # Release instance mutex
     if ($script:AppMutex) {
