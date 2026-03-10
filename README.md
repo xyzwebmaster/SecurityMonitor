@@ -55,16 +55,26 @@ A PowerShell-based security monitoring tool with a modern dark-themed WinForms d
 
 ## Installation
 
-Run once as Administrator — the first-run GUI lets you configure notification preferences, then monitoring begins:
+### Quick Install (Recommended)
+
+Download and run the installer in one command — creates desktop shortcut, auto-start task, and begins monitoring:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File SecurityMonitor.ps1
+powershell -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/xyzwebmaster/SecurityMonitor/master/Install.ps1' -OutFile '$env:TEMP\Install.ps1'; & '$env:TEMP\Install.ps1'"
 ```
 
-Or use the installer for guided setup with desktop shortcut and auto-start:
+Or if you already have the files locally:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File Install.ps1
+```
+
+### Manual Start
+
+Run directly as Administrator without the installer:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File SecurityMonitor.ps1
 ```
 
 ### Desktop Shortcut
