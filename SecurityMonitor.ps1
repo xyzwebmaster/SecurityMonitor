@@ -580,6 +580,11 @@ function Show-Dashboard {
         $lv.OwnerDraw = $true
         $lv.HeaderStyle = "Nonclickable"
 
+        # Force row height to 28px using an empty ImageList trick
+        $imgList = New-Object System.Windows.Forms.ImageList
+        $imgList.ImageSize = New-Object System.Drawing.Size(1, 28)
+        $lv.SmallImageList = $imgList
+
         # Draw column headers
         $lv.Add_DrawColumnHeader({
             param($s, $e)
@@ -645,10 +650,11 @@ function Show-Dashboard {
                 if ($e.ColumnIndex -eq 0) {
                     $cellFont = New-Object System.Drawing.Font("Consolas", 8.5)
                 }
-                $textRect = New-Object System.Drawing.RectangleF(($e.Bounds.X + 8), ($e.Bounds.Y + 3), ($e.Bounds.Width - 10), $e.Bounds.Height)
+                $textRect = New-Object System.Drawing.RectangleF(($e.Bounds.X + 8), $e.Bounds.Y, ($e.Bounds.Width - 10), $e.Bounds.Height)
                 $sf = New-Object System.Drawing.StringFormat
                 $sf.FormatFlags = [System.Drawing.StringFormatFlags]::NoWrap
                 $sf.Trimming = [System.Drawing.StringTrimming]::EllipsisCharacter
+                $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
                 $text = if ($e.SubItem) { $e.SubItem.Text } else { "" }
                 $e.Graphics.DrawString($text, $cellFont, $txtBrush, $textRect, $sf)
                 $sf.Dispose()
