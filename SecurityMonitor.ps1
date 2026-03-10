@@ -110,14 +110,15 @@ function Send-ToastNotification {
 function Send-Alert {
     param([string]$Title, [string]$Message)
     $script:AlertCount++
-    Write-Alert "$Title - $Message"
     Write-Log "$Title - $Message" -Level "ALERT"
 
-    if (-not $Silent) {
-        # Send Windows toast notification
-        Send-ToastNotification -Title $Title -Message $Message
+    # Windows toast notification is ALWAYS sent regardless of -Silent flag
+    # This ensures background/scheduled task mode still delivers desktop alerts
+    Send-ToastNotification -Title $Title -Message $Message
 
-        # Alert beep
+    if (-not $Silent) {
+        # Console output and alert beep only in interactive mode
+        Write-Alert "$Title - $Message"
         try { [System.Console]::Beep(1000, 300); [System.Console]::Beep(1500, 300) } catch {}
     }
 }
