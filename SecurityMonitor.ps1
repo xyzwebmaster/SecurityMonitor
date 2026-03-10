@@ -9,7 +9,7 @@
 .AUTHOR
     SecurityMonitor - Forensic Monitoring
 .VERSION
-    5.0.0
+    6.0.0
 #>
 
 param(
@@ -21,6 +21,7 @@ param(
 
 # --- NOTIFICATION PREFERENCES GUI ---
 $ConfigFile = Join-Path $PSScriptRoot "notification_config.json"
+$script:ConfigFilePath = $ConfigFile
 
 function Show-ConfigGUI {
     Add-Type -AssemblyName System.Windows.Forms
@@ -311,7 +312,7 @@ function Show-Dashboard {
     $sidebar.Controls.Add($logoLabel)
 
     $verLabel = New-Object System.Windows.Forms.Label
-    $verLabel.Text = "v5.0 Dashboard"
+    $verLabel.Text = "v6.0 Dashboard"
     $verLabel.Location = New-Object System.Drawing.Point(0, 65)
     $verLabel.Size = New-Object System.Drawing.Size(200, 18)
     $verLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
@@ -353,7 +354,8 @@ function Show-Dashboard {
     $form.Controls.Add($contentPanel)
 
     # Create page panels (each tab is a Panel that fills contentPanel)
-    $pages = @{}
+    $script:Pages = @{}
+    $pages = $script:Pages
     foreach ($pageName in @("Status", "Alerts", "Settings", "Logs")) {
         $p = New-Object System.Windows.Forms.Panel
         $p.Dock = "Fill"
@@ -432,15 +434,15 @@ function Show-Dashboard {
     # Navigation switching scriptblock (stored in script scope so closures can reach it)
     $script:SwitchPageFn = {
         param([string]$targetName)
-        foreach ($pKey in $pages.Keys) { $pages[$pKey].Visible = ($pKey -eq $targetName) }
-        foreach ($nb in $navButtons) {
+        foreach ($pKey in $script:Pages.Keys) { $script:Pages[$pKey].Visible = ($pKey -eq $targetName) }
+        foreach ($nb in $script:NavButtons) {
             if ($nb.Tag -eq $targetName) {
-                $nb.BackColor = $colAccentDim
-                $nb.ForeColor = $colTextMain
+                $nb.BackColor = [System.Drawing.Color]::FromArgb(0, 90, 160)
+                $nb.ForeColor = [System.Drawing.Color]::White
                 $nb.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
             } else {
-                $nb.BackColor = $colSidebar
-                $nb.ForeColor = $colTextDim
+                $nb.BackColor = [System.Drawing.Color]::FromArgb(24, 24, 38)
+                $nb.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 160)
                 $nb.Font = New-Object System.Drawing.Font("Segoe UI", 10)
             }
         }
@@ -504,11 +506,11 @@ function Show-Dashboard {
         return $val
     }
 
-    $lblAlerts      = New-StatCard $statusPage 25  65  "Total Alerts"         "valAlerts"
-    $lblConnections = New-StatCard $statusPage 220 65  "Active Connections"   "valConns"
-    $lblProcesses   = New-StatCard $statusPage 415 65  "Tracked Processes"    "valProcs"
-    $lblUptime      = New-StatCard $statusPage 610 65  "Uptime"               "valUptime"
-    $lblUptime.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+    $script:LblAlerts      = New-StatCard $statusPage 25  65  "Total Alerts"         "valAlerts"
+    $script:LblConnections = New-StatCard $statusPage 220 65  "Active Connections"   "valConns"
+    $script:LblProcesses   = New-StatCard $statusPage 415 65  "Tracked Processes"    "valProcs"
+    $script:LblUptime      = New-StatCard $statusPage 610 65  "Uptime"               "valUptime"
+    $script:LblUptime.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
 
     # Computer info
     $infoBox = New-Object System.Windows.Forms.Panel
@@ -550,7 +552,8 @@ function Show-Dashboard {
     $recentLabel.ForeColor = $colOrange
     $statusPage.Controls.Add($recentLabel)
 
-    $recentList = New-Object System.Windows.Forms.ListView
+    $script:RecentList = New-Object System.Windows.Forms.ListView
+    $recentList = $script:RecentList
     $recentList.Name = "recentList"
     $recentList.Location = New-Object System.Drawing.Point(25, 288)
     $recentList.Size = New-Object System.Drawing.Size(770, 300)
@@ -566,11 +569,11 @@ function Show-Dashboard {
     [void]$recentList.Columns.Add("Message", 360)
     $recentList.Add_DoubleClick({
         try {
-            $sel = $recentList.SelectedItems
+            $sel = $this.SelectedItems
             if ($sel.Count -gt 0) {
                 $idx = $sel[0].Tag
                 $ad = $script:AlertHistory[$idx]
-                Show-AlertDetail -AlertData $ad -ParentForm $form
+                Show-AlertDetail -AlertData $ad -ParentForm $script:DashboardForm
             }
         } catch {}
     })
@@ -600,7 +603,8 @@ function Show-Dashboard {
     $alertsPage.Controls.Add($alertCountLabel)
 
     # Full alert list
-    $alertListView = New-Object System.Windows.Forms.ListView
+    $script:AlertListView = New-Object System.Windows.Forms.ListView
+    $alertListView = $script:AlertListView
     $alertListView.Name = "alertListView"
     $alertListView.Location = New-Object System.Drawing.Point(25, 58)
     $alertListView.Size = New-Object System.Drawing.Size(770, 290)
@@ -625,7 +629,8 @@ function Show-Dashboard {
     $detailBox.AutoScroll = $true
     $alertsPage.Controls.Add($detailBox)
 
-    $detailTitle = New-Object System.Windows.Forms.Label
+    $script:DetailTitle = New-Object System.Windows.Forms.Label
+    $detailTitle = $script:DetailTitle
     $detailTitle.Name = "detailTitle"
     $detailTitle.Text = "Select an alert to view details"
     $detailTitle.Location = New-Object System.Drawing.Point(15, 10)
@@ -634,7 +639,8 @@ function Show-Dashboard {
     $detailTitle.ForeColor = $colTextDim
     $detailBox.Controls.Add($detailTitle)
 
-    $detailContent = New-Object System.Windows.Forms.Panel
+    $script:DetailContent = New-Object System.Windows.Forms.Panel
+    $detailContent = $script:DetailContent
     $detailContent.Name = "detailContent"
     $detailContent.Location = New-Object System.Drawing.Point(15, 40)
     $detailContent.Size = New-Object System.Drawing.Size(730, 130)
@@ -643,7 +649,8 @@ function Show-Dashboard {
     $detailBox.Controls.Add($detailContent)
 
     # IP Lookup button (hidden until connection alert selected)
-    $ipLookupBtn = New-Object System.Windows.Forms.Button
+    $script:IpLookupBtn = New-Object System.Windows.Forms.Button
+    $ipLookupBtn = $script:IpLookupBtn
     $ipLookupBtn.Name = "ipLookupBtn"
     $ipLookupBtn.Text = "Lookup IP on ipinfo.io"
     $ipLookupBtn.Location = New-Object System.Drawing.Point(15, 180)
@@ -655,7 +662,7 @@ function Show-Dashboard {
     $ipLookupBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
     $ipLookupBtn.Visible = $false
     $ipLookupBtn.Tag = ""
-    $ipLookupBtn.Add_Click({ if ($ipLookupBtn.Tag) { Start-Process "https://ipinfo.io/$($ipLookupBtn.Tag)" } })
+    $ipLookupBtn.Add_Click({ if ($this.Tag) { Start-Process "https://ipinfo.io/$($this.Tag)" } })
     $detailBox.Controls.Add($ipLookupBtn)
 
     # Open log button
@@ -668,22 +675,23 @@ function Show-Dashboard {
     $openLogBtn.ForeColor = $colTextMain
     $openLogBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     $openLogBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $openLogBtn.Add_Click({ if (Test-Path $AlertFile) { Start-Process notepad.exe $AlertFile } })
+    $openLogBtn.Tag = $AlertFile
+    $openLogBtn.Add_Click({ if ($this.Tag -and (Test-Path $this.Tag)) { Start-Process notepad.exe $this.Tag } })
     $detailBox.Controls.Add($openLogBtn)
 
     # Click on alert row → populate detail panel
     $alertListView.Add_SelectedIndexChanged({
         try {
-            $sel = $alertListView.SelectedItems
+            $sel = $this.SelectedItems
             if ($sel.Count -eq 0) { return }
             $idx = $sel[0].Tag
             if ($idx -ge $script:AlertHistory.Count) { return }
             $ad = $script:AlertHistory[$idx]
 
-            $detailTitle.Text = "$($ad.Title)"
-            $detailTitle.ForeColor = [System.Drawing.Color]::FromArgb(220, 50, 60)
+            $script:DetailTitle.Text = "$($ad.Title)"
+            $script:DetailTitle.ForeColor = [System.Drawing.Color]::FromArgb(220, 50, 60)
 
-            $detailContent.Controls.Clear()
+            $script:DetailContent.Controls.Clear()
             $dy = 0
             foreach ($key in $ad.Details.Keys) {
                 $kl = New-Object System.Windows.Forms.Label
@@ -692,7 +700,7 @@ function Show-Dashboard {
                 $kl.Size = New-Object System.Drawing.Size(140, 20)
                 $kl.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
                 $kl.ForeColor = [System.Drawing.Color]::FromArgb(100, 160, 255)
-                $detailContent.Controls.Add($kl)
+                $script:DetailContent.Controls.Add($kl)
 
                 $vl = New-Object System.Windows.Forms.Label
                 $vl.Text = "$($ad.Details[$key])"
@@ -700,23 +708,26 @@ function Show-Dashboard {
                 $vl.Size = New-Object System.Drawing.Size(560, 20)
                 $vl.Font = New-Object System.Drawing.Font("Consolas", 9)
                 $vl.ForeColor = [System.Drawing.Color]::White
-                $detailContent.Controls.Add($vl)
+                $script:DetailContent.Controls.Add($vl)
                 $dy += 24
             }
 
             # Show/hide IP lookup button
             if ($ad.RemoteIP) {
-                $ipLookupBtn.Text = "Lookup $($ad.RemoteIP) on ipinfo.io"
-                $ipLookupBtn.Tag = "$($ad.RemoteIP)"
-                $ipLookupBtn.Visible = $true
+                $script:IpLookupBtn.Text = "Lookup $($ad.RemoteIP) on ipinfo.io"
+                $script:IpLookupBtn.Tag = "$($ad.RemoteIP)"
+                $script:IpLookupBtn.Visible = $true
             } else {
-                $ipLookupBtn.Visible = $false
+                $script:IpLookupBtn.Visible = $false
             }
         } catch {}
     })
 
     # Track how many alerts we've already rendered
     $script:RenderedAlertCount = 0
+
+    # Store alertCountLabel in script scope for timer access
+    $script:AlertCountLabel = $alertCountLabel
 
     # Incremental refresh - only add NEW alerts since last render (script scope for timer access)
     $script:UpdateAlertsListFn = {
@@ -730,6 +741,7 @@ function Show-Dashboard {
                 if ($a.Category -eq "Connection") { $itemColor = [System.Drawing.Color]::FromArgb(255, 160, 40) }
                 elseif ($a.Category -eq "Process")  { $itemColor = [System.Drawing.Color]::FromArgb(220, 50, 60) }
                 elseif ($a.Category -eq "Firmware") { $itemColor = [System.Drawing.Color]::FromArgb(255, 80, 80) }
+                elseif ($a.Category -eq "Registry Tampering") { $itemColor = [System.Drawing.Color]::FromArgb(255, 0, 0) }
 
                 $item = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
                 [void]$item.SubItems.Add($a.Category)
@@ -737,7 +749,7 @@ function Show-Dashboard {
                 [void]$item.SubItems.Add($a.Message)
                 $item.Tag = $i
                 $item.ForeColor = $itemColor
-                [void]$alertListView.Items.Insert(0, $item)
+                [void]$script:AlertListView.Items.Insert(0, $item)
 
                 $r = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
                 [void]$r.SubItems.Add($a.Category)
@@ -745,14 +757,14 @@ function Show-Dashboard {
                 [void]$r.SubItems.Add($a.Message)
                 $r.Tag = $i
                 $r.ForeColor = $itemColor
-                [void]$recentList.Items.Insert(0, $r)
-                while ($recentList.Items.Count -gt 10) {
-                    $recentList.Items.RemoveAt($recentList.Items.Count - 1)
+                [void]$script:RecentList.Items.Insert(0, $r)
+                while ($script:RecentList.Items.Count -gt 10) {
+                    $script:RecentList.Items.RemoveAt($script:RecentList.Items.Count - 1)
                 }
             }
             $script:RenderedAlertCount = $total
-            $alertCountLabel.Text = "$total alerts"
-            $lblAlerts.Text = "$($script:AlertCount)"
+            $script:AlertCountLabel.Text = "$total alerts"
+            $script:LblAlerts.Text = "$($script:AlertCount)"
         } catch {}
     }
 
@@ -790,7 +802,8 @@ function Show-Dashboard {
         @{ Key = "Hosts";      Label = "Hosts File Modifications";    Desc = "Changes to the hosts file that could redirect DNS queries";                                   Icon = "[HF]" }
     )
 
-    $settingsCheckboxes = @{}
+    $script:SettingsCheckboxes = @{}
+    $settingsCheckboxes = $script:SettingsCheckboxes
     $sy = 85
     foreach ($opt in $options) {
         $card = New-Object System.Windows.Forms.Panel
@@ -835,7 +848,7 @@ function Show-Dashboard {
                 $senderCb = $this
                 $cfgKey = $senderCb.Tag
                 $script:NotifyConfig | Add-Member -MemberType NoteProperty -Name $cfgKey -Value $senderCb.Checked -Force
-                $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $ConfigFile -Encoding UTF8
+                $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $script:ConfigFilePath -Encoding UTF8
             } catch {}
         })
 
@@ -851,7 +864,7 @@ function Show-Dashboard {
     $selAllBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
     $selAllBtn.ForeColor = $colTextMain
     $selAllBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $selAllBtn.Add_Click({ foreach ($c in $settingsCheckboxes.Values) { $c.Checked = $true } })
+    $selAllBtn.Add_Click({ foreach ($c in $script:SettingsCheckboxes.Values) { $c.Checked = $true } })
     $settingsPage.Controls.Add($selAllBtn)
 
     $deselAllBtn = New-Object System.Windows.Forms.Button
@@ -862,7 +875,7 @@ function Show-Dashboard {
     $deselAllBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
     $deselAllBtn.ForeColor = $colTextMain
     $deselAllBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $deselAllBtn.Add_Click({ foreach ($c in $settingsCheckboxes.Values) { $c.Checked = $false } })
+    $deselAllBtn.Add_Click({ foreach ($c in $script:SettingsCheckboxes.Values) { $c.Checked = $false } })
     $settingsPage.Controls.Add($deselAllBtn)
 
     $savedLabel = New-Object System.Windows.Forms.Label
@@ -925,8 +938,8 @@ function Show-Dashboard {
         $openBtn.BackColor = $colAccentDim
         $openBtn.ForeColor = $colTextMain
         $openBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-        $capturedFile = $lf.File
-        $openBtn.Add_Click({ if (Test-Path $capturedFile) { Start-Process notepad.exe $capturedFile } })
+        $openBtn.Tag = $lf.File
+        $openBtn.Add_Click({ if ($this.Tag -and (Test-Path $this.Tag)) { Start-Process notepad.exe $this.Tag } })
         $logCard.Controls.Add($openBtn)
 
         $folderBtn = New-Object System.Windows.Forms.Button
@@ -937,7 +950,8 @@ function Show-Dashboard {
         $folderBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
         $folderBtn.ForeColor = $colTextMain
         $folderBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-        $folderBtn.Add_Click({ Start-Process explorer.exe $LogDir })
+        $folderBtn.Tag = $LogDir
+        $folderBtn.Add_Click({ Start-Process explorer.exe $this.Tag })
         $logCard.Controls.Add($folderBtn)
 
         $ly += 68
@@ -981,8 +995,8 @@ function Show-Dashboard {
         $blOpenBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
         $blOpenBtn.ForeColor = $colTextMain
         $blOpenBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-        $capturedBl = $bl.File
-        $blOpenBtn.Add_Click({ if (Test-Path $capturedBl) { Start-Process notepad.exe $capturedBl } })
+        $blOpenBtn.Tag = $bl.File
+        $blOpenBtn.Add_Click({ if ($this.Tag -and (Test-Path $this.Tag)) { Start-Process notepad.exe $this.Tag } })
         $blCard.Controls.Add($blOpenBtn)
 
         $ly += 50
@@ -993,12 +1007,12 @@ function Show-Dashboard {
     $script:DashTimer.Interval = 5000
     $script:DashTimer.Add_Tick({
         try {
-            if ($form.Visible -and -not $form.IsDisposed) {
-                $lblAlerts.Text = "$($script:AlertCount)"
-                $lblConnections.Text = "$($script:KnownRemotes.Count)"
-                $lblProcesses.Text = "$($script:KnownProcesses.Count)"
+            if ($script:DashboardForm -and $script:DashboardForm.Visible -and -not $script:DashboardForm.IsDisposed) {
+                $script:LblAlerts.Text = "$($script:AlertCount)"
+                $script:LblConnections.Text = "$($script:KnownRemotes.Count)"
+                $script:LblProcesses.Text = "$($script:KnownProcesses.Count)"
                 $up = (Get-Date) - $script:StartTime
-                $lblUptime.Text = "{0:D2}h {1:D2}m" -f [int]$up.TotalHours, $up.Minutes
+                $script:LblUptime.Text = "{0:D2}h {1:D2}m" -f [int]$up.TotalHours, $up.Minutes
                 & $script:UpdateAlertsListFn
             }
         } catch {}
@@ -1680,12 +1694,215 @@ function Watch-HostsFile {
     } catch {}
 }
 
+# --- ANTI-TAMPERING REGISTRY MONITORING ---
+# Detects registry keys that hackers use to disable security tools, PowerShell, Defender, etc.
+function Watch-RegistryTampering {
+    $tamperChecks = @(
+        # IFEO debugger redirects (blocks executables from running)
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\powershell.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on PowerShell - prevents PowerShell from running" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\powershell_ise.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on PowerShell ISE" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Task Manager - blocks taskmgr" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\regedit.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Registry Editor" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\MsMpEng.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Defender Engine - disables antivirus" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\MpCmdRun.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Defender CLI" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\cmd.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Command Prompt" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\mmc.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Management Console" },
+
+        # Windows Defender disabling
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender"; Name = "DisableAntiSpyware"; BadIf = "1"; Desc = "Windows Defender AntiSpyware DISABLED via policy" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender"; Name = "DisableAntiVirus"; BadIf = "1"; Desc = "Windows Defender AntiVirus DISABLED via policy" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableRealtimeMonitoring"; BadIf = "1"; Desc = "Defender Real-Time Protection DISABLED" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableBehaviorMonitoring"; BadIf = "1"; Desc = "Defender Behavior Monitoring DISABLED" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableOnAccessProtection"; BadIf = "1"; Desc = "Defender On-Access Protection DISABLED" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableIOAVProtection"; BadIf = "1"; Desc = "Defender Download Scanning DISABLED" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableScanOnRealtimeEnable"; BadIf = "1"; Desc = "Defender Scan on RT Enable DISABLED" },
+
+        # UAC bypass / disable
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"; Name = "EnableLUA"; BadIf = "0"; Desc = "UAC COMPLETELY DISABLED - critical security bypass" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"; Name = "ConsentPromptBehaviorAdmin"; BadIf = "0"; Desc = "UAC admin prompt DISABLED - silent elevation" },
+
+        # UAC bypass via COM hijacking
+        @{ Path = "HKCU:\Software\Classes\ms-settings\shell\open\command"; Name = "(Default)"; BadIf = "exists"; Desc = "UAC BYPASS via ms-settings COM hijack" },
+        @{ Path = "HKCU:\Software\Classes\mscfile\shell\open\command"; Name = "(Default)"; BadIf = "exists"; Desc = "UAC BYPASS via mscfile COM hijack" },
+
+        # Disable Task Manager and system tools
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System"; Name = "DisableTaskMgr"; BadIf = "1"; Desc = "Task Manager DISABLED via policy" },
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System"; Name = "DisableRegistryTools"; BadIf = "1"; Desc = "Registry Editor DISABLED via policy" },
+        @{ Path = "HKCU:\Software\Policies\Microsoft\Windows\System"; Name = "DisableCMD"; BadIf = "1"; Desc = "Command Prompt DISABLED via policy" },
+
+        # PowerShell execution and logging
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"; Name = "EnableScriptBlockLogging"; BadIf = "0"; Desc = "PowerShell Script Block Logging DISABLED - hides attacker commands" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging"; Name = "EnableModuleLogging"; BadIf = "0"; Desc = "PowerShell Module Logging DISABLED" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription"; Name = "EnableTranscripting"; BadIf = "0"; Desc = "PowerShell Transcription DISABLED" },
+
+        # AMSI (Antimalware Scan Interface) disable
+        @{ Path = "HKCU:\Software\Microsoft\Windows Script\Settings"; Name = "AmsiEnable"; BadIf = "0"; Desc = "AMSI DISABLED - allows malicious scripts to bypass scanning" },
+
+        # Firewall disable
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\StandardProfile"; Name = "EnableFirewall"; BadIf = "0"; Desc = "Windows Firewall DISABLED (Standard profile)" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile"; Name = "EnableFirewall"; BadIf = "0"; Desc = "Windows Firewall DISABLED (Domain profile)" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile"; Name = "EnableFirewall"; BadIf = "0"; Desc = "Windows Firewall DISABLED (Public profile)" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\StandardProfile"; Name = "EnableFirewall"; BadIf = "0"; Desc = "Windows Firewall service DISABLED (Standard)" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\PublicProfile"; Name = "EnableFirewall"; BadIf = "0"; Desc = "Windows Firewall service DISABLED (Public)" },
+
+        # Event Log tampering
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Security"; Name = "Enabled"; BadIf = "0"; Desc = "Security Event Log DISABLED" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\System"; Name = "Enabled"; BadIf = "0"; Desc = "System Event Log DISABLED" },
+
+        # Notification suppression (hides security alerts)
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"; Name = "EnableBalloonTips"; BadIf = "0"; Desc = "Balloon notification tips DISABLED - hides security alerts" },
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"; Name = "NoTrayItemsDisplay"; BadIf = "1"; Desc = "System tray icons HIDDEN - hides security monitor" },
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"; Name = "HideSCAHealth"; BadIf = "1"; Desc = "Security Center icon HIDDEN" },
+
+        # Executable blocklist
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"; Name = "DisallowRun"; BadIf = "1"; Desc = "Executable blocklist ACTIVE - may block security tools" },
+
+        # Security service tampering
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\WinDefend"; Name = "Start"; BadIf = "4"; Desc = "Windows Defender SERVICE DISABLED" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\wscsvc"; Name = "Start"; BadIf = "4"; Desc = "Security Center SERVICE DISABLED" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\mpssvc"; Name = "Start"; BadIf = "4"; Desc = "Firewall SERVICE DISABLED" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog"; Name = "Start"; BadIf = "4"; Desc = "Event Log SERVICE DISABLED" },
+
+        # Winlogon persistence hijack
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"; Name = "Shell"; BadIf = "notexplorer"; Desc = "Winlogon Shell HIJACKED - should be explorer.exe" },
+
+        # MiniNt key (disables security event logging)
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\MiniNt"; Name = "(KeyExists)"; BadIf = "exists"; Desc = "MiniNt key EXISTS - disables Security event logging (WinPE trick)" },
+
+        # Security Center notification suppression
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Security Center"; Name = "AntiVirusDisableNotify"; BadIf = "1"; Desc = "AntiVirus disable notifications SUPPRESSED" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Security Center"; Name = "FirewallDisableNotify"; BadIf = "1"; Desc = "Firewall disable notifications SUPPRESSED" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Security Center"; Name = "UpdatesDisableNotify"; BadIf = "1"; Desc = "Update disable notifications SUPPRESSED" },
+
+        # Windows Script Host disable
+        @{ Path = "HKLM:\Software\Microsoft\Windows Script Host\Settings"; Name = "Enabled"; BadIf = "0"; Desc = "Windows Script Host DISABLED" },
+        @{ Path = "HKCU:\Software\Microsoft\Windows Script Host\Settings"; Name = "Enabled"; BadIf = "0"; Desc = "Windows Script Host DISABLED (user)" }
+    )
+
+    foreach ($check in $tamperChecks) {
+        try {
+            # Special case: check if key itself exists
+            if ($check.Name -eq "(KeyExists)") {
+                if (Test-Path $check.Path) {
+                    $alertKey = "TAMPER:$($check.Path)"
+                    if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
+                        $script:TamperAlerted[$alertKey] = $true
+                        Send-Alert "REGISTRY TAMPERING" $check.Desc -Category "Registry Tampering" -ExtraDetails @{
+                            "Registry Path" = $check.Path
+                            "Threat"        = $check.Desc
+                            "Action"        = "INVESTIGATE IMMEDIATELY - This key should NOT exist"
+                        }
+                    }
+                }
+                continue
+            }
+
+            # Special case: Winlogon Shell check
+            if ($check.BadIf -eq "notexplorer") {
+                $val = (Get-ItemProperty -Path $check.Path -Name $check.Name -ErrorAction SilentlyContinue).$($check.Name)
+                if ($val -and $val -ne "explorer.exe") {
+                    $alertKey = "TAMPER:$($check.Path)\$($check.Name)"
+                    if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
+                        $script:TamperAlerted[$alertKey] = $true
+                        Send-Alert "REGISTRY TAMPERING" "$($check.Desc) - Current: $val" -Category "Registry Tampering" -ExtraDetails @{
+                            "Registry Path"  = $check.Path
+                            "Value Name"     = $check.Name
+                            "Current Value"  = "$val"
+                            "Expected Value" = "explorer.exe"
+                            "Threat"         = $check.Desc
+                        }
+                    }
+                }
+                continue
+            }
+
+            if (-not (Test-Path $check.Path)) { continue }
+            $val = (Get-ItemProperty -Path $check.Path -Name $check.Name -ErrorAction SilentlyContinue).$($check.Name)
+            if ($null -eq $val) { continue }
+
+            $isBad = $false
+            if ($check.BadIf -eq "exists") {
+                $isBad = $true
+            } elseif ("$val" -eq "$($check.BadIf)") {
+                $isBad = $true
+            }
+
+            if ($isBad) {
+                $alertKey = "TAMPER:$($check.Path)\$($check.Name)=$val"
+                if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
+                    $script:TamperAlerted[$alertKey] = $true
+                    Send-Alert "REGISTRY TAMPERING" $check.Desc -Category "Registry Tampering" -ExtraDetails @{
+                        "Registry Path"  = $check.Path
+                        "Value Name"     = $check.Name
+                        "Current Value"  = "$val"
+                        "Threat"         = $check.Desc
+                        "Action"         = "INVESTIGATE AND REMEDIATE - This may indicate active compromise"
+                    }
+                }
+            }
+        } catch {}
+    }
+
+    # Check DisallowRun list for blocked security executables
+    try {
+        $disallowPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\DisallowRun"
+        if (Test-Path $disallowPath) {
+            $props = Get-ItemProperty -Path $disallowPath -ErrorAction SilentlyContinue
+            foreach ($p in $props.PSObject.Properties) {
+                if ($p.Name -match "^\d+$" -and $p.Value -match "(?i)(powershell|cmd|regedit|taskmgr|mmc|eventvwr|msconfig|perfmon|procexp|autoruns|wireshark)") {
+                    $alertKey = "TAMPER:DisallowRun:$($p.Value)"
+                    if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
+                        $script:TamperAlerted[$alertKey] = $true
+                        Send-Alert "EXECUTABLE BLOCKED" "DisallowRun: $($p.Value) is BLOCKED from running" -Category "Registry Tampering" -ExtraDetails @{
+                            "Registry Path" = $disallowPath
+                            "Blocked Exe"   = $p.Value
+                            "Threat"        = "Security tool blocked via DisallowRun policy"
+                            "Action"        = "Remove this entry to restore access"
+                        }
+                    }
+                }
+            }
+        }
+    } catch {}
+
+    # Check Defender exclusions for suspicious entries
+    try {
+        $exclPaths = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths",
+            "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Processes",
+            "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Paths",
+            "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions\Processes"
+        )
+        foreach ($ep in $exclPaths) {
+            if (Test-Path $ep) {
+                $props = Get-ItemProperty -Path $ep -ErrorAction SilentlyContinue
+                foreach ($p in $props.PSObject.Properties) {
+                    if ($p.Name -notin @("PSPath","PSParentPath","PSChildName","PSDrive","PSProvider")) {
+                        $alertKey = "TAMPER:Exclusion:$ep\$($p.Name)"
+                        if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
+                            $script:TamperAlerted[$alertKey] = $true
+                            Send-Alert "DEFENDER EXCLUSION" "Suspicious exclusion: $($p.Name)" -Category "Registry Tampering" -ExtraDetails @{
+                                "Registry Path"   = $ep
+                                "Excluded Target"  = $p.Name
+                                "Threat"           = "Malware often adds Defender exclusions to hide itself"
+                                "Action"           = "Verify this exclusion is legitimate"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } catch {}
+}
+
+$script:TamperAlerted = @{}
+
 # --- MAIN LOOP ---
 function Start-Monitoring {
     $banner = @"
 
   ======================================================
-    SECURITY MONITORING SYSTEM v5.0
+    SECURITY MONITORING SYSTEM v6.0
     Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
     Computer: $env:COMPUTERNAME
     User: $env:USERNAME
@@ -1770,6 +1987,7 @@ function Start-Monitoring {
             Watch-Listeners
             Watch-SecurityEvents
             Watch-Registry
+            Watch-RegistryTampering
             Watch-HostsFile
 
             if ($cycle % $fwCheckInterval -eq 0) {
