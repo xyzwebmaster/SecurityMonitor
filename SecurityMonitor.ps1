@@ -243,11 +243,16 @@ function Show-Dashboard {
     param([string]$OpenTab = "Status")
 
     # If dashboard already open, bring to front
-    if ($script:DashboardForm -and -not $script:DashboardForm.IsDisposed) {
-        $script:DashboardForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
-        $script:DashboardForm.BringToFront()
-        $script:DashboardForm.Activate()
-        return
+    try {
+        if ($script:DashboardForm -and -not $script:DashboardForm.IsDisposed) {
+            $script:DashboardForm.Show()
+            $script:DashboardForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
+            $script:DashboardForm.BringToFront()
+            $script:DashboardForm.Activate()
+            return
+        }
+    } catch {
+        $script:DashboardForm = $null
     }
 
     Add-Type -AssemblyName System.Windows.Forms
@@ -306,7 +311,7 @@ function Show-Dashboard {
     $sidebar.Controls.Add($logoLabel)
 
     $verLabel = New-Object System.Windows.Forms.Label
-    $verLabel.Text = "v4.0 Dashboard"
+    $verLabel.Text = "v5.0 Dashboard"
     $verLabel.Location = New-Object System.Drawing.Point(0, 65)
     $verLabel.Size = New-Object System.Drawing.Size(200, 18)
     $verLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
@@ -369,28 +374,27 @@ function Show-Dashboard {
         $navY += 44
     }
 
-    # Navigation switching logic
-    $switchPage = {
-        param($targetName)
+    # Navigation switching function
+    function Switch-Page {
+        param([string]$targetName)
         foreach ($pKey in $pages.Keys) { $pages[$pKey].Visible = ($pKey -eq $targetName) }
-        foreach ($b in $navButtons) {
-            if ($b.Tag -eq $targetName) {
-                $b.BackColor = $colAccentDim
-                $b.ForeColor = $colTextMain
-                $b.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+        foreach ($nb in $navButtons) {
+            if ($nb.Tag -eq $targetName) {
+                $nb.BackColor = $colAccentDim
+                $nb.ForeColor = $colTextMain
+                $nb.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
             } else {
-                $b.BackColor = $colSidebar
-                $b.ForeColor = $colTextDim
-                $b.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+                $nb.BackColor = $colSidebar
+                $nb.ForeColor = $colTextDim
+                $nb.Font = New-Object System.Drawing.Font("Segoe UI", 10)
             }
         }
-        # Refresh alerts list when switching to Alerts tab
-        if ($targetName -eq "Alerts") { Update-AlertsList }
     }
 
+    # Bind each nav button with its own captured tag value
     foreach ($b in $navButtons) {
-        $capturedBtn = $b
-        $b.Add_Click({ & $switchPage $capturedBtn.Tag })
+        $tag = $b.Tag
+        $b.Add_Click({ Switch-Page $tag }.GetNewClosure())
     }
 
     # ═══════════════════════════════════════════════════════════════
@@ -500,17 +504,19 @@ function Show-Dashboard {
     $recentList.BackColor = $colCard
     $recentList.ForeColor = $colTextMain
     $recentList.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $recentList.Columns.Add("Time", 130) | Out-Null
-    $recentList.Columns.Add("Category", 90) | Out-Null
-    $recentList.Columns.Add("Title", 180) | Out-Null
-    $recentList.Columns.Add("Message", 360) | Out-Null
+    [void]$recentList.Columns.Add("Time", 130)
+    [void]$recentList.Columns.Add("Category", 90)
+    [void]$recentList.Columns.Add("Title", 180)
+    [void]$recentList.Columns.Add("Message", 360)
     $recentList.Add_DoubleClick({
-        $sel = $recentList.SelectedItems
-        if ($sel.Count -gt 0) {
-            $idx = $sel[0].Tag
-            $ad = $script:AlertHistory[$idx]
-            Show-AlertDetail -AlertData $ad -ParentForm $form
-        }
+        try {
+            $sel = $recentList.SelectedItems
+            if ($sel.Count -gt 0) {
+                $idx = $sel[0].Tag
+                $ad = $script:AlertHistory[$idx]
+                Show-AlertDetail -AlertData $ad -ParentForm $form
+            }
+        } catch {}
     })
     $statusPage.Controls.Add($recentList)
 
@@ -548,10 +554,10 @@ function Show-Dashboard {
     $alertListView.BackColor = $colCard
     $alertListView.ForeColor = $colTextMain
     $alertListView.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $alertListView.Columns.Add("Time", 130) | Out-Null
-    $alertListView.Columns.Add("Category", 90) | Out-Null
-    $alertListView.Columns.Add("Title", 180) | Out-Null
-    $alertListView.Columns.Add("Message", 360) | Out-Null
+    [void]$alertListView.Columns.Add("Time", 130)
+    [void]$alertListView.Columns.Add("Category", 90)
+    [void]$alertListView.Columns.Add("Title", 180)
+    [void]$alertListView.Columns.Add("Message", 360)
     $alertsPage.Controls.Add($alertListView)
 
     # Detail panel below the list
@@ -611,77 +617,89 @@ function Show-Dashboard {
 
     # Click on alert row → populate detail panel
     $alertListView.Add_SelectedIndexChanged({
-        $sel = $alertListView.SelectedItems
-        if ($sel.Count -eq 0) { return }
-        $idx = $sel[0].Tag
-        $ad = $script:AlertHistory[$idx]
+        try {
+            $sel = $alertListView.SelectedItems
+            if ($sel.Count -eq 0) { return }
+            $idx = $sel[0].Tag
+            if ($idx -ge $script:AlertHistory.Count) { return }
+            $ad = $script:AlertHistory[$idx]
 
-        $detailTitle.Text = $ad.Title
-        $detailTitle.ForeColor = $colRed
+            $detailTitle.Text = "$($ad.Title)"
+            $detailTitle.ForeColor = [System.Drawing.Color]::FromArgb(220, 50, 60)
 
-        $detailContent.Controls.Clear()
-        $dy = 0
-        foreach ($key in $ad.Details.Keys) {
-            $kl = New-Object System.Windows.Forms.Label
-            $kl.Text = "${key}:"
-            $kl.Location = New-Object System.Drawing.Point(0, $dy)
-            $kl.Size = New-Object System.Drawing.Size(140, 20)
-            $kl.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-            $kl.ForeColor = [System.Drawing.Color]::FromArgb(100, 160, 255)
-            $detailContent.Controls.Add($kl)
+            $detailContent.Controls.Clear()
+            $dy = 0
+            foreach ($key in $ad.Details.Keys) {
+                $kl = New-Object System.Windows.Forms.Label
+                $kl.Text = "${key}:"
+                $kl.Location = New-Object System.Drawing.Point(0, $dy)
+                $kl.Size = New-Object System.Drawing.Size(140, 20)
+                $kl.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+                $kl.ForeColor = [System.Drawing.Color]::FromArgb(100, 160, 255)
+                $detailContent.Controls.Add($kl)
 
-            $vl = New-Object System.Windows.Forms.Label
-            $vl.Text = "$($ad.Details[$key])"
-            $vl.Location = New-Object System.Drawing.Point(145, $dy)
-            $vl.Size = New-Object System.Drawing.Size(560, 20)
-            $vl.Font = New-Object System.Drawing.Font("Consolas", 9)
-            $vl.ForeColor = $colTextMain
-            $detailContent.Controls.Add($vl)
-            $dy += 24
-        }
+                $vl = New-Object System.Windows.Forms.Label
+                $vl.Text = "$($ad.Details[$key])"
+                $vl.Location = New-Object System.Drawing.Point(145, $dy)
+                $vl.Size = New-Object System.Drawing.Size(560, 20)
+                $vl.Font = New-Object System.Drawing.Font("Consolas", 9)
+                $vl.ForeColor = [System.Drawing.Color]::White
+                $detailContent.Controls.Add($vl)
+                $dy += 24
+            }
 
-        # Show/hide IP lookup button
-        if ($ad.RemoteIP) {
-            $ipLookupBtn.Text = "Lookup $($ad.RemoteIP) on ipinfo.io"
-            $ipLookupBtn.Tag = $ad.RemoteIP
-            $ipLookupBtn.Visible = $true
-        } else {
-            $ipLookupBtn.Visible = $false
-        }
+            # Show/hide IP lookup button
+            if ($ad.RemoteIP) {
+                $ipLookupBtn.Text = "Lookup $($ad.RemoteIP) on ipinfo.io"
+                $ipLookupBtn.Tag = "$($ad.RemoteIP)"
+                $ipLookupBtn.Visible = $true
+            } else {
+                $ipLookupBtn.Visible = $false
+            }
+        } catch {}
     })
 
-    # Refresh function for alerts list
-    $script:UpdateAlertsList = {
-        $alertListView.Items.Clear()
-        $recentList.Items.Clear()
-        for ($i = $script:AlertHistory.Count - 1; $i -ge 0; $i--) {
+    # Track how many alerts we've already rendered
+    $script:RenderedAlertCount = 0
+
+    # Incremental refresh - only add NEW alerts since last render
+    function Update-AlertsList {
+        $total = $script:AlertHistory.Count
+        if ($total -eq $script:RenderedAlertCount) { return }
+
+        # Add only new items (from RenderedAlertCount to total-1)
+        for ($i = $script:RenderedAlertCount; $i -lt $total; $i++) {
             $a = $script:AlertHistory[$i]
+            $itemColor = $colTextMain
+            if ($a.Category -eq "Connection") { $itemColor = $colOrange }
+            elseif ($a.Category -eq "Process")  { $itemColor = $colRed }
+            elseif ($a.Category -eq "Firmware") { $itemColor = [System.Drawing.Color]::FromArgb(255, 80, 80) }
+
+            # Insert at top of alert list (newest first)
             $item = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
             $item.SubItems.Add($a.Category) | Out-Null
             $item.SubItems.Add($a.Title) | Out-Null
             $item.SubItems.Add($a.Message) | Out-Null
             $item.Tag = $i
-            if ($a.Category -eq "Connection") { $item.ForeColor = $colOrange }
-            elseif ($a.Category -eq "Process")  { $item.ForeColor = $colRed }
-            elseif ($a.Category -eq "Firmware") { $item.ForeColor = [System.Drawing.Color]::FromArgb(255, 80, 80) }
-            $alertListView.Items.Add($item) | Out-Null
+            $item.ForeColor = $itemColor
+            $alertListView.Items.Insert(0, $item) | Out-Null
 
-            # Also add to recent (max 10)
-            if ($recentList.Items.Count -lt 10) {
-                $r = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
-                $r.SubItems.Add($a.Category) | Out-Null
-                $r.SubItems.Add($a.Title) | Out-Null
-                $r.SubItems.Add($a.Message) | Out-Null
-                $r.Tag = $i
-                if ($a.Category -eq "Connection") { $r.ForeColor = $colOrange }
-                $recentList.Items.Add($r) | Out-Null
+            # Insert at top of recent list (keep max 10)
+            $r = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
+            $r.SubItems.Add($a.Category) | Out-Null
+            $r.SubItems.Add($a.Title) | Out-Null
+            $r.SubItems.Add($a.Message) | Out-Null
+            $r.Tag = $i
+            $r.ForeColor = $itemColor
+            $recentList.Items.Insert(0, $r) | Out-Null
+            while ($recentList.Items.Count -gt 10) {
+                $recentList.Items.RemoveAt($recentList.Items.Count - 1)
             }
         }
-        $alertCountLabel.Text = "$($script:AlertHistory.Count) alerts"
+        $script:RenderedAlertCount = $total
+        $alertCountLabel.Text = "$total alerts"
         $lblAlerts.Text = "$($script:AlertCount)"
     }
-
-    function Update-AlertsList { & $script:UpdateAlertsList }
 
     # ═══════════════════════════════════════════════════════════════
     #  PAGE 3: SETTINGS (notification preferences - live edit)
@@ -759,9 +777,11 @@ function Show-Dashboard {
         $capturedKey = $opt.Key
         $capturedCb = $cb
         $cb.Add_CheckedChanged({
-            $script:NotifyConfig | Add-Member -MemberType NoteProperty -Name $capturedKey -Value $capturedCb.Checked -Force
-            $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $ConfigFile -Encoding UTF8
-        })
+            try {
+                $script:NotifyConfig | Add-Member -MemberType NoteProperty -Name $capturedKey -Value $capturedCb.Checked -Force
+                $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $ConfigFile -Encoding UTF8
+            } catch {}
+        }.GetNewClosure())
 
         $sy += 52
     }
@@ -914,21 +934,23 @@ function Show-Dashboard {
 
     # ── Status updater timer ──
     $script:DashTimer = New-Object System.Windows.Forms.Timer
-    $script:DashTimer.Interval = 3000
+    $script:DashTimer.Interval = 5000
     $script:DashTimer.Add_Tick({
-        if ($form.Visible) {
-            $lblAlerts.Text = "$($script:AlertCount)"
-            $lblConnections.Text = "$($script:KnownRemotes.Count)"
-            $lblProcesses.Text = "$($script:KnownProcesses.Count)"
-            $up = (Get-Date) - $script:StartTime
-            $lblUptime.Text = "{0:D2}h {1:D2}m" -f [int]$up.TotalHours, $up.Minutes
-            Update-AlertsList
-        }
+        try {
+            if ($form.Visible -and -not $form.IsDisposed) {
+                $lblAlerts.Text = "$($script:AlertCount)"
+                $lblConnections.Text = "$($script:KnownRemotes.Count)"
+                $lblProcesses.Text = "$($script:KnownProcesses.Count)"
+                $up = (Get-Date) - $script:StartTime
+                $lblUptime.Text = "{0:D2}h {1:D2}m" -f [int]$up.TotalHours, $up.Minutes
+                Update-AlertsList
+            }
+        } catch {}
     })
     $script:DashTimer.Start()
 
     # Open default tab
-    & $switchPage $OpenTab
+    Switch-Page $OpenTab
 
     $form.Show()
 }
@@ -1603,7 +1625,7 @@ function Start-Monitoring {
     $banner = @"
 
   ======================================================
-    SECURITY MONITORING SYSTEM v3.0
+    SECURITY MONITORING SYSTEM v5.0
     Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
     Computer: $env:COMPUTERNAME
     User: $env:USERNAME
