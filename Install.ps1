@@ -13,6 +13,49 @@ $taskName = "SecurityMonitor"
 
 Write-Host "=== SecurityMonitor Setup ===" -ForegroundColor Cyan
 
+# 0. Download project files from GitHub if SecurityMonitor.ps1 is missing (one-liner install)
+if (-not (Test-Path $monitorScript)) {
+    Write-Host "[0/6] Downloading SecurityMonitor from GitHub..." -ForegroundColor Yellow
+    $repoZip = Join-Path $env:TEMP "SecurityMonitor.zip"
+    $extractDir = Join-Path $env:TEMP "SecurityMonitor_extract"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri "https://github.com/xyzwebmaster/SecurityMonitor/archive/refs/heads/master.zip" -OutFile $repoZip -UseBasicParsing
+        if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+        Expand-Archive -Path $repoZip -DestinationPath $extractDir -Force
+        $innerDir = Get-ChildItem $extractDir | Select-Object -First 1
+        $targetDir = Join-Path $env:USERPROFILE "SecurityMonitor"
+        if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }
+        Copy-Item -Path "$($innerDir.FullName)\*" -Destination $targetDir -Recurse -Force
+        Remove-Item $repoZip -Force -ErrorAction SilentlyContinue
+        Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+        # Update paths to the new location
+        $scriptDir = $targetDir
+        $monitorScript = Join-Path $scriptDir "SecurityMonitor.ps1"
+        Write-Host "  -> Downloaded to $targetDir" -ForegroundColor Green
+    } catch {
+        Write-Host "  -> Download failed: $_" -ForegroundColor Red
+        Write-Host "     Please download manually from https://github.com/xyzwebmaster/SecurityMonitor" -ForegroundColor Yellow
+        exit 1
+    }
+}
+
+# 0.5. Download HollowsHunter (AI memory scanner)
+$toolsDir = Join-Path $scriptDir "Tools"
+$hhPath = Join-Path $toolsDir "hollows_hunter.exe"
+if (-not (Test-Path $hhPath)) {
+    Write-Host "[AI] Downloading HollowsHunter (memory injection scanner)..." -ForegroundColor Cyan
+    try {
+        if (-not (Test-Path $toolsDir)) { New-Item -ItemType Directory -Path $toolsDir -Force | Out-Null }
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $hhUrl = "https://github.com/hasherezade/hollows_hunter/releases/download/v0.4.1.1/hollows_hunter64.exe"
+        Invoke-WebRequest -Uri $hhUrl -OutFile $hhPath -UseBasicParsing
+        Write-Host "  -> HollowsHunter installed to Tools\" -ForegroundColor Green
+    } catch {
+        Write-Host "  -> HollowsHunter download failed (AI detection will use behavioral analysis only)" -ForegroundColor Yellow
+    }
+}
+
 # 1. Execution policy
 Write-Host "[1/5] Checking PowerShell execution policy..."
 $currentPolicy = Get-ExecutionPolicy -Scope CurrentUser

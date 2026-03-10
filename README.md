@@ -57,10 +57,10 @@ A PowerShell-based security monitoring tool with a modern dark-themed WinForms d
 
 ### Quick Install (Recommended)
 
-Download and run the installer in one command — creates desktop shortcut, auto-start task, and begins monitoring:
+Download and run the installer in one command — downloads all project files, installs HollowsHunter, creates desktop shortcut, auto-start task, and begins monitoring:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/xyzwebmaster/SecurityMonitor/master/Install.ps1' -OutFile '$env:TEMP\Install.ps1'; & '$env:TEMP\Install.ps1'"
+powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest 'https://raw.githubusercontent.com/xyzwebmaster/SecurityMonitor/master/Install.ps1' -OutFile '$env:TEMP\SM_Install.ps1' -UseBasicParsing; & '$env:TEMP\SM_Install.ps1'"
 ```
 
 Or if you already have the files locally:
@@ -68,6 +68,12 @@ Or if you already have the files locally:
 ```powershell
 powershell -ExecutionPolicy Bypass -File Install.ps1
 ```
+
+The installer automatically:
+1. Downloads the full repository to `%USERPROFILE%\SecurityMonitor\` (if not already present)
+2. Downloads [HollowsHunter](https://github.com/hasherezade/hollows_hunter) for AI memory scanning
+3. Creates directories, scheduled task, and desktop shortcut
+4. Starts monitoring immediately
 
 ### Manual Start
 
