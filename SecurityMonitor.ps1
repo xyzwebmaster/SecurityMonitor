@@ -1481,10 +1481,20 @@ function Show-Dashboard {
             # Auto-resize DetailContent panel to fit all rows
             $script:DetailContent.Height = [Math]::Max(80, $dy + 5)
 
-            # Reposition buttons below content
-            $btnY = $script:DetailContent.Bottom + 8
+            # Reposition buttons below content with proper spacing
+            $btnY = $script:DetailContent.Bottom + 12
+            $btnRow2Y = $btnY + 42
+
+            # Row 1: IpLookup / OpenLog / Regedit
             $script:IpLookupBtn.Location = New-Object System.Drawing.Point(15, $btnY)
             $script:OpenLogBtn.Location = New-Object System.Drawing.Point(310, $btnY)
+
+            # Bring all buttons to front so DetailContent can't cover them
+            $script:IpLookupBtn.BringToFront()
+            $script:OpenLogBtn.BringToFront()
+            $script:RegeditBtn.BringToFront()
+            $script:BlockIpBtn.BringToFront()
+            $script:RestoreRegBtn.BringToFront()
 
             # Show/hide IP lookup button and Block IP button
             if ($ad.RemoteIP) {
@@ -1496,7 +1506,7 @@ function Show-Dashboard {
                 $blockRuleName = "SecurityMonitor_Block_$($ad.RemoteIP)_In"
                 $alreadyBlocked = Get-NetFirewallRule -DisplayName $blockRuleName -ErrorAction SilentlyContinue
                 $script:BlockIpBtn.Tag = "$($ad.RemoteIP)"
-                $script:BlockIpBtn.Location = New-Object System.Drawing.Point(15, ($btnY + 42))
+                $script:BlockIpBtn.Location = New-Object System.Drawing.Point(15, $btnRow2Y)
                 if ($alreadyBlocked) {
                     $script:BlockIpBtn.Text = "IP Already Blocked"
                     $script:BlockIpBtn.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
@@ -1566,7 +1576,7 @@ function Show-Dashboard {
                     $script:RestoreRegBtn.Text = $btnText
                     $script:RestoreRegBtn.BackColor = [System.Drawing.Color]::FromArgb(30, 130, 60)
                     $script:RestoreRegBtn.Enabled = $true
-                    $script:RestoreRegBtn.Location = New-Object System.Drawing.Point(485, ($btnY + 42))
+                    $script:RestoreRegBtn.Location = New-Object System.Drawing.Point(485, $btnRow2Y)
                     $script:RestoreRegBtn.Visible = $true
                 } else {
                     $script:RestoreRegBtn.Visible = $false
