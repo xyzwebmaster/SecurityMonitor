@@ -216,6 +216,19 @@ try {
 $ErrorActionPreference = "SilentlyContinue"
 $script:StartTime = Get-Date
 $script:AlertCount = 0
+$script:MonitorAlertQueue = [System.Collections.ArrayList]::Synchronized([System.Collections.ArrayList]::new())
+
+# Background I/O cache - heavy cmdlets run in background runspace, Watch-* read from here
+$script:MonitorCache = [hashtable]::Synchronized(@{
+    Connections = $null     # Get-NetTCPConnection results
+    Processes = $null       # Get-Process results
+    Listeners = $null       # Get-NetTCPConnection -State Listen
+    RegistryTamper = $null  # Pre-read registry values for tampering checks
+    RegistryKeys = $null    # Get-ItemProperty for critical keys
+    HostsHash = $null       # hosts file hash
+    Ready = $false
+    Cycle = 0
+})
 
 # Color-coded output functions
 function Write-Status  { param($Msg) Write-Host "[*] $Msg" -ForegroundColor Cyan }
@@ -2986,6 +2999,8 @@ function New-RegistryBaseline {
 }
 
 function Watch-Registry {
+    # Uses pre-cached registry data from background runspace when available
+    $cachedRegKeys = $script:MonitorCache.RegistryKeys
     $criticalKeys = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
@@ -2993,11 +3008,12 @@ function Watch-Registry {
         "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
     )
     foreach ($key in $criticalKeys) {
-        $hash = Get-RegistryHash -KeyPath $key
-        if ($hash -and $script:RegistryBaseline.ContainsKey($key) -and $script:RegistryBaseline[$key] -ne $hash) {
-            # Capture before/after registry values
-            $beforeSnapshot = $script:RegistrySnapshotCache[$key]
-            $afterValues = @{}
+        # Use cached values if available, otherwise fall back to direct read
+        $afterValues = @{}
+        $cachedEntry = $cachedRegKeys | Where-Object { $_.Key -eq $key } | Select-Object -First 1
+        if ($cachedEntry -and $cachedEntry.Values) {
+            $afterValues = $cachedEntry.Values
+        } else {
             try {
                 $props = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue
                 foreach ($p in $props.PSObject.Properties) {
@@ -3006,6 +3022,16 @@ function Watch-Registry {
                     }
                 }
             } catch {}
+        }
+
+        # Compute hash from values
+        $json = ($afterValues.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join "|"
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        $hash = [BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-',''
+
+        if ($hash -and $script:RegistryBaseline.ContainsKey($key) -and $script:RegistryBaseline[$key] -ne $hash) {
+            $beforeSnapshot = $script:RegistrySnapshotCache[$key]
 
             # Determine what changed
             $added = @(); $removed = @(); $modified = @()
@@ -3058,9 +3084,13 @@ function Watch-Registry {
 $script:HostsHash = $null
 
 function Watch-HostsFile {
-    $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
     try {
-        $hash = (Get-FileHash -Path $hostsPath -Algorithm SHA256).Hash
+        # Use cached hash from background runspace if available
+        $hash = $script:MonitorCache.HostsHash
+        if (-not $hash) {
+            $hash = (Get-FileHash -Path "$env:SystemRoot\System32\drivers\etc\hosts" -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+        }
+        if (-not $hash) { return }
         if ($null -eq $script:HostsHash) {
             $script:HostsHash = $hash
         } elseif ($script:HostsHash -ne $hash) {
@@ -3073,6 +3103,32 @@ function Watch-HostsFile {
 # --- ANTI-TAMPERING REGISTRY MONITORING ---
 # Detects registry keys that hackers use to disable security tools, PowerShell, Defender, etc.
 function Watch-RegistryTampering {
+    # Build lookup from background cache for instant registry reads
+    $tamperCache = @{}
+    $cachedTamper = $script:MonitorCache.RegistryTamper
+    if ($cachedTamper) {
+        foreach ($entry in $cachedTamper) {
+            $tamperCache["$($entry.Path)|$($entry.Name)"] = $entry
+        }
+    }
+
+    # Helper: get registry value from cache or direct read (fallback)
+    $getRegVal = {
+        param($path, $name)
+        $cacheKey = "$path|$name"
+        if ($tamperCache.ContainsKey($cacheKey)) {
+            $e = $tamperCache[$cacheKey]
+            return @{ Exists = $e.Exists; Value = $e.Value }
+        }
+        # Fallback to direct read if not in cache
+        $exists = Test-Path $path
+        $val = $null
+        if ($exists -and $name -ne "(KeyExists)") {
+            $val = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+        }
+        return @{ Exists = $exists; Value = $val }
+    }
+
     $tamperChecks = @(
         # IFEO debugger redirects (blocks executables from running)
         @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\powershell.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on PowerShell - prevents PowerShell from running" },
@@ -3228,7 +3284,8 @@ function Watch-RegistryTampering {
         try {
             # Special case: check if key itself exists
             if ($check.Name -eq "(KeyExists)") {
-                if (Test-Path $check.Path) {
+                $regInfo = & $getRegVal $check.Path "(KeyExists)"
+                if ($regInfo.Exists) {
                     $alertKey = "TAMPER:$($check.Path)"
                     if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
                         $script:TamperAlerted[$alertKey] = $true
@@ -3244,7 +3301,7 @@ function Watch-RegistryTampering {
 
             # Special case: Winlogon Shell check
             if ($check.BadIf -eq "notexplorer") {
-                $val = (Get-ItemProperty -Path $check.Path -Name $check.Name -ErrorAction SilentlyContinue).$($check.Name)
+                $val = (& $getRegVal $check.Path $check.Name).Value
                 if ($val -and $val -ne "explorer.exe") {
                     $alertKey = "TAMPER:$($check.Path)\$($check.Name)"
                     if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
@@ -3263,7 +3320,7 @@ function Watch-RegistryTampering {
 
             # Special case: Winlogon Userinit check
             if ($check.BadIf -eq "notdefault") {
-                $val = (Get-ItemProperty -Path $check.Path -Name $check.Name -ErrorAction SilentlyContinue).$($check.Name)
+                $val = (& $getRegVal $check.Path $check.Name).Value
                 $defaultUserinit = "C:\Windows\system32\userinit.exe,"
                 if ($val -and $val -ne $defaultUserinit -and $val -ne "C:\Windows\system32\userinit.exe") {
                     $alertKey = "TAMPER:$($check.Path)\$($check.Name)"
@@ -3283,7 +3340,7 @@ function Watch-RegistryTampering {
 
             # Special case: AppInit_DLLs non-empty check
             if ($check.BadIf -eq "exists_nonempty") {
-                $val = (Get-ItemProperty -Path $check.Path -Name $check.Name -ErrorAction SilentlyContinue).$($check.Name)
+                $val = (& $getRegVal $check.Path $check.Name).Value
                 if ($val -and "$val".Trim().Length -gt 0) {
                     $alertKey = "TAMPER:$($check.Path)\$($check.Name)"
                     if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
@@ -3301,7 +3358,7 @@ function Watch-RegistryTampering {
 
             # Special case: Event log size too small (attacker shrinks to overwrite evidence)
             if ($check.BadIf -eq "toosmall") {
-                $val = (Get-ItemProperty -Path $check.Path -Name $check.Name -ErrorAction SilentlyContinue).$($check.Name)
+                $val = (& $getRegVal $check.Path $check.Name).Value
                 if ($val -and [int]$val -lt 1048576) {
                     $alertKey = "TAMPER:$($check.Path)\$($check.Name)"
                     if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
@@ -3320,8 +3377,9 @@ function Watch-RegistryTampering {
             # Special case: Skip scheduled task tree check (handled separately below)
             if ($check.BadIf -eq "checkchildren") { continue }
 
-            if (-not (Test-Path $check.Path)) { continue }
-            $val = (Get-ItemProperty -Path $check.Path -Name $check.Name -ErrorAction SilentlyContinue).$($check.Name)
+            $regInfo = & $getRegVal $check.Path $check.Name
+            if (-not $regInfo.Exists) { continue }
+            $val = $regInfo.Value
             if ($null -eq $val) { continue }
 
             $isBad = $false
@@ -3584,68 +3642,246 @@ function Start-Monitoring {
             Write-Ok "Monitoring active. Press Ctrl+C to stop."
             Write-Host "-----------------------------------------------------------" -ForegroundColor DarkGray
 
-            # Start the monitoring timer - work is spread across ticks to avoid UI freezes
-            # Each tick runs only a subset of checks (round-robin), so no single tick is heavy
-            $script:MonitorPhase = 0
+            # ── Background I/O runspace: does ALL heavy cmdlet calls off-UI-thread ──
+            $script:MonitorCache.Running = $true
+            $script:MonIORunspace = [runspacefactory]::CreateRunspace()
+            $script:MonIORunspace.ApartmentState = "STA"
+            $script:MonIORunspace.Open()
+            $script:MonIORunspace.SessionStateProxy.SetVariable("cache", $script:MonitorCache)
+            $script:MonIORunspace.SessionStateProxy.SetVariable("interval", $IntervalSeconds)
+            $script:MonIOPS = [powershell]::Create().AddScript({
+                param($cache, $interval)
+                while ($cache.Running) {
+                    try {
+                        # Network connections (was ~340ms)
+                        try {
+                            $conns = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+                                Where-Object { $_.RemoteAddress -notmatch "^(127\.|::1|0\.0\.0\.0)" } |
+                                ForEach-Object {
+                                    $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+                                    @{
+                                        LocalAddr = $_.LocalAddress; LocalPort = $_.LocalPort
+                                        RemoteAddr = $_.RemoteAddress; RemotePort = $_.RemotePort
+                                        PID = $_.OwningProcess
+                                        ProcessName = if ($proc) { $proc.ProcessName } else { "Unknown" }
+                                        ProcessPath = if ($proc) { "$($proc.Path)" } else { "" }
+                                    }
+                                }
+                            $cache.Connections = @($conns)
+                        } catch {}
+
+                        # Listeners (was ~150ms)
+                        try {
+                            $listeners = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+                                Where-Object { $_.LocalAddress -notmatch "^(127\.|::1)" } |
+                                ForEach-Object {
+                                    $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+                                    @{
+                                        LocalAddr = $_.LocalAddress; LocalPort = $_.LocalPort
+                                        PID = $_.OwningProcess
+                                        ProcessName = if ($proc) { $proc.ProcessName } else { "Unknown" }
+                                    }
+                                }
+                            $cache.Listeners = @($listeners)
+                        } catch {}
+
+                        # Processes (was ~5ms but Get-AuthenticodeSignature can be slow)
+                        try {
+                            $procs = Get-Process | Where-Object { $_.Id -ne 0 -and $_.Id -ne 4 } |
+                                ForEach-Object {
+                                    @{ Id = $_.Id; Name = $_.ProcessName; Path = "$($_.Path)" }
+                                }
+                            $cache.Processes = @($procs)
+                        } catch {}
+
+                        # Registry tampering pre-read (was ~1100ms - the MAIN offender)
+                        try {
+                            $tamperResults = @()
+                            $regPaths = @(
+                                @("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\powershell.exe", "Debugger"),
+                                @("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\powershell_ise.exe", "Debugger"),
+                                @("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe", "Debugger"),
+                                @("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\regedit.exe", "Debugger"),
+                                @("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\MsMpEng.exe", "Debugger"),
+                                @("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\MpCmdRun.exe", "Debugger"),
+                                @("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\cmd.exe", "Debugger"),
+                                @("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\mmc.exe", "Debugger"),
+                                @("HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender", "DisableAntiSpyware"),
+                                @("HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender", "DisableAntiVirus"),
+                                @("HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection", "DisableRealtimeMonitoring"),
+                                @("HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection", "DisableBehaviorMonitoring"),
+                                @("HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection", "DisableOnAccessProtection"),
+                                @("HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection", "DisableIOAVProtection"),
+                                @("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", "EnableLUA"),
+                                @("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", "ConsentPromptBehaviorAdmin"),
+                                @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System", "DisableTaskMgr"),
+                                @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System", "DisableRegistryTools"),
+                                @("HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging", "EnableScriptBlockLogging"),
+                                @("HKCU:\Software\Microsoft\Windows Script\Settings", "AmsiEnable"),
+                                @("HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\StandardProfile", "EnableFirewall"),
+                                @("HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile", "EnableFirewall"),
+                                @("HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile", "EnableFirewall"),
+                                @("HKLM:\SYSTEM\CurrentControlSet\Services\WinDefend", "Start"),
+                                @("HKLM:\SYSTEM\CurrentControlSet\Services\wscsvc", "Start"),
+                                @("HKLM:\SYSTEM\CurrentControlSet\Services\mpssvc", "Start"),
+                                @("HKLM:\SYSTEM\CurrentControlSet\Services\EventLog", "Start"),
+                                @("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon", "Shell"),
+                                @("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon", "Userinit"),
+                                @("HKLM:\SOFTWARE\Microsoft\Security Center", "AntiVirusDisableNotify"),
+                                @("HKLM:\SOFTWARE\Microsoft\Security Center", "FirewallDisableNotify"),
+                                @("HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "__PSLockdownPolicy"),
+                                @("HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications", "ToastEnabled"),
+                                @("HKCU:\Software\Policies\Microsoft\Windows\Explorer", "DisableNotificationCenter")
+                            )
+                            foreach ($rp in $regPaths) {
+                                try {
+                                    $pathExists = Test-Path $rp[0]
+                                    $val = $null
+                                    if ($pathExists -and $rp[1]) {
+                                        $val = (Get-ItemProperty -Path $rp[0] -Name $rp[1] -ErrorAction SilentlyContinue).$($rp[1])
+                                    }
+                                    $tamperResults += @{ Path = $rp[0]; Name = $rp[1]; Exists = $pathExists; Value = $val }
+                                } catch {
+                                    $tamperResults += @{ Path = $rp[0]; Name = $rp[1]; Exists = $false; Value = $null }
+                                }
+                            }
+                            # Also check special keys
+                            $tamperResults += @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\MiniNt"; Name = "(KeyExists)"; Exists = (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Control\MiniNt"); Value = $null }
+                            $cache.RegistryTamper = $tamperResults
+                        } catch {}
+
+                        # Critical registry keys hash check
+                        try {
+                            $regKeyData = @()
+                            foreach ($key in @(
+                                "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+                                "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+                                "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+                                "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
+                            )) {
+                                $vals = @{}
+                                try {
+                                    $props = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue
+                                    if ($props) {
+                                        foreach ($p in $props.PSObject.Properties) {
+                                            if ($p.Name -notin @("PSPath","PSParentPath","PSChildName","PSDrive","PSProvider")) {
+                                                $vals[$p.Name] = "$($p.Value)"
+                                            }
+                                        }
+                                    }
+                                } catch {}
+                                $regKeyData += @{ Key = $key; Values = $vals }
+                            }
+                            $cache.RegistryKeys = $regKeyData
+                        } catch {}
+
+                        # Hosts file hash
+                        try {
+                            $cache.HostsHash = (Get-FileHash "$env:SystemRoot\System32\drivers\etc\hosts" -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+                        } catch {}
+
+                        $cache.Cycle++
+                        $cache.Ready = $true
+                    } catch {}
+                    Start-Sleep -Seconds $interval
+                }
+            }).AddArgument($script:MonitorCache).AddArgument($IntervalSeconds)
+            $script:MonIOPS.Runspace = $script:MonIORunspace
+            $script:MonIOHandle = $script:MonIOPS.BeginInvoke()
+
+            # ── UI Monitor Timer: reads from cache (instant), processes results, sends alerts ──
+            $script:LastMonCycle = 0
             $script:MonitorTimer = New-Object System.Windows.Forms.Timer
-            $script:MonitorTimer.Interval = [math]::Max(3000, [math]::Round(($IntervalSeconds * 1000) / 3))
+            $script:MonitorTimer.Interval = 2000
             $script:MonitorTimer.Add_Tick({
                 try {
-                    $script:MonitorTimer.Stop()
-                    $phase = $script:MonitorPhase % 3
+                    if (-not $script:MonitorCache.Ready) { return }
+                    if ($script:MonitorCache.Cycle -eq $script:LastMonCycle) { return }
+                    $script:LastMonCycle = $script:MonitorCache.Cycle
+                    $script:MonitorCycle++
                     $ts = Get-Date -Format "HH:mm:ss"
 
-                    switch ($phase) {
-                        0 {
-                            # Phase 0: Network checks (connections + listeners)
-                            Watch-Connections
-                            Watch-Listeners
+                    # Process cached connections (no I/O here - just comparisons)
+                    $cachedConns = $script:MonitorCache.Connections
+                    if ($cachedConns) {
+                        foreach ($conn in $cachedConns) {
+                            $key = "$($conn.RemoteAddr):$($conn.RemotePort)|$($conn.PID)"
+                            if (-not $script:KnownRemotes.ContainsKey($key)) {
+                                $script:KnownRemotes[$key] = Get-Date
+                                $isKnown = $conn.ProcessName -in $script:WhitelistedProcesses
+                                Write-Log "NEW CONNECTION: $($conn.ProcessName) (PID:$($conn.PID)) -> $($conn.RemoteAddr):$($conn.RemotePort)" -Level "INFO" -Target $ConnectionLog
+                                if (-not $isKnown) {
+                                    Send-Alert "UNKNOWN CONNECTION" "$($conn.ProcessName) -> $($conn.RemoteAddr):$($conn.RemotePort)" -Category "Connection" -RemoteIP $conn.RemoteAddr -ExtraDetails @{
+                                        "Process Name" = $conn.ProcessName; "Process Path" = $conn.ProcessPath
+                                        "PID" = "$($conn.PID)"; "Remote" = "$($conn.RemoteAddr):$($conn.RemotePort)"
+                                    }
+                                }
+                            }
                         }
-                        1 {
-                            # Phase 1: Process + security events
-                            Watch-Processes
-                            Watch-SecurityEvents
-                        }
-                        2 {
-                            # Phase 2: Registry + hosts + firmware (least frequent)
-                            Watch-Registry
-                            Watch-RegistryTampering
-                            Watch-HostsFile
-                            $script:MonitorCycle++
+                        $currentKeys = $cachedConns | ForEach-Object { "$($_.RemoteAddr):$($_.RemotePort)|$($_.PID)" }
+                        $staleKeys = @($script:KnownRemotes.Keys) | Where-Object { $_ -notin $currentKeys }
+                        foreach ($k in $staleKeys) { $script:KnownRemotes.Remove($k) }
+                    }
+
+                    # Process cached listeners
+                    $cachedListeners = $script:MonitorCache.Listeners
+                    if ($cachedListeners) {
+                        foreach ($l in $cachedListeners) {
+                            $key = "$($l.LocalAddr):$($l.LocalPort)"
+                            if (-not $script:KnownListeners.ContainsKey($key)) {
+                                $script:KnownListeners[$key] = $l.ProcessName
+                                if ($l.ProcessName -notin $script:WhitelistedProcesses) {
+                                    Send-Alert "NEW LISTENER" "$($l.ProcessName) on port $($l.LocalPort)" -Category "Listener" -ExtraDetails @{
+                                        "Process" = $l.ProcessName; "Port" = "$($l.LocalAddr):$($l.LocalPort)"
+                                    }
+                                }
+                            }
                         }
                     }
-                    $script:MonitorPhase++
 
-                    # Firmware/driver/service checks on longer interval (based on full cycles)
-                    if ($phase -eq 2 -and $script:MonitorCycle % $script:FwCheckInterval -eq 0) {
-                        Write-Status "[$ts] Running firmware integrity check..."
+                    # Process cached processes
+                    $cachedProcs = $script:MonitorCache.Processes
+                    if ($cachedProcs) {
+                        foreach ($proc in $cachedProcs) {
+                            if (-not $script:KnownProcesses.ContainsKey($proc.Id)) {
+                                $script:KnownProcesses[$proc.Id] = @{ Name = $proc.Name; Path = $proc.Path; Time = Get-Date }
+                                $isKnown = $proc.Name -in $script:WhitelistedProcesses
+                                Write-Log "NEW PROCESS: $($proc.Name) (PID:$($proc.Id)) | Path: $($proc.Path)" -Level "INFO" -Target $ProcessLog
+                                if (-not $isKnown -and $proc.Path) {
+                                    Send-Alert "NEW PROCESS" "$($proc.Name) (PID:$($proc.Id))" -Category "Process" -ExtraDetails @{
+                                        "Process Name" = $proc.Name; "PID" = "$($proc.Id)"; "Path" = $proc.Path
+                                    }
+                                }
+                            }
+                        }
+                        $currentPids = $cachedProcs | ForEach-Object { $_.Id }
+                        $stalePids = @($script:KnownProcesses.Keys) | Where-Object { $_ -notin $currentPids }
+                        foreach ($p in $stalePids) { $script:KnownProcesses.Remove($p) }
+                    }
+
+                    # Process cached registry tampering (was 1100ms, now instant)
+                    Watch-RegistryTampering
+                    Watch-Registry
+                    Watch-HostsFile
+                    Watch-SecurityEvents
+
+                    # Firmware/driver/service checks on longer interval
+                    if ($script:MonitorCycle % $script:FwCheckInterval -eq 0) {
                         $fwChanges = Compare-FirmwareBaseline
                         if ($fwChanges -and $fwChanges.Count -gt 0) {
                             foreach ($change in $fwChanges) {
                                 Send-Alert "FIRMWARE $($change.Type)" "$($change.File) - $($change.Detail)" -Category "Firmware" -ExtraDetails @{
-                                    "File Path"    = $change.File
-                                    "Change Type"  = $change.Type
-                                    "Detail"       = $change.Detail
+                                    "File Path" = $change.File; "Change Type" = $change.Type; "Detail" = $change.Detail
                                 }
                             }
                         }
-
                         $drvChanges = Compare-DriverBaseline
-                        if ($drvChanges -and $drvChanges.Count -gt 0) {
-                            foreach ($change in $drvChanges) {
-                                Send-Alert $change.Type $change.Detail -Category "Driver"
-                            }
-                        }
-
+                        if ($drvChanges) { foreach ($c in $drvChanges) { Send-Alert $c.Type $c.Detail -Category "Driver" } }
                         $svcChanges = Compare-ServiceBaseline
-                        if ($svcChanges -and $svcChanges.Count -gt 0) {
-                            foreach ($change in $svcChanges) {
-                                Send-Alert $change.Type $change.Detail -Category "Service"
-                            }
-                        }
+                        if ($svcChanges) { foreach ($c in $svcChanges) { Send-Alert $c.Type $c.Detail -Category "Service" } }
                     }
 
-                    if ($script:MonitorPhase % 18 -eq 0) {
+                    if ($script:MonitorCycle % 6 -eq 0) {
                         $uptime = (Get-Date) - $script:StartTime
                         $uptimeStr = "{0:D2}h {1:D2}m {2:D2}s" -f $uptime.Hours, $uptime.Minutes, $uptime.Seconds
                         Write-Host "[$ts] Uptime: $uptimeStr | Alerts: $($script:AlertCount) | Connections: $($script:KnownRemotes.Count) | Processes: $($script:KnownProcesses.Count)" -ForegroundColor DarkGray
@@ -3703,6 +3939,10 @@ try {
     # Clean up timers
     if ($script:SignalTimer) { try { $script:SignalTimer.Stop(); $script:SignalTimer.Dispose() } catch {} }
     if ($script:MonitorTimer) { try { $script:MonitorTimer.Stop(); $script:MonitorTimer.Dispose() } catch {} }
+    # Stop background monitor I/O runspace
+    if ($script:MonitorCache) { try { $script:MonitorCache.Running = $false } catch {} }
+    if ($script:MonIOPS) { try { $script:MonIOPS.Stop(); $script:MonIOPS.Dispose() } catch {} }
+    if ($script:MonIORunspace) { try { $script:MonIORunspace.Close(); $script:MonIORunspace.Dispose() } catch {} }
     if ($script:PulseTimer) { try { $script:PulseTimer.Stop(); $script:PulseTimer.Dispose() } catch {} }
     # Stop background runspace for dashboard data
     if ($script:DashCache) { try { $script:DashCache.Running = $false } catch {} }
