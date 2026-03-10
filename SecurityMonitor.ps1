@@ -1103,9 +1103,13 @@ function Initialize-TrayIcon {
     $exitItem = New-Object System.Windows.Forms.ToolStripMenuItem("Stop Monitoring")
     $exitItem.ForeColor = [System.Drawing.Color]::FromArgb(255, 80, 80)
     $exitItem.Add_Click({
+        $script:MonitoringRunning = $false
         $script:TrayIcon.Visible = $false
         $script:TrayIcon.Dispose()
-        [Environment]::Exit(0)
+        if ($script:DashboardForm -and -not $script:DashboardForm.IsDisposed) {
+            $script:DashboardForm.Dispose()
+        }
+        [System.Windows.Forms.Application]::ExitThread()
     })
     $contextMenu.Items.Add($exitItem) | Out-Null
 
@@ -1694,57 +1698,67 @@ function Start-Monitoring {
 
     $cycle = 0
     $fwCheckInterval = 30
+    $script:MonitoringRunning = $true
 
-    while ($true) {
-        $cycle++
-        $ts = Get-Date -Format "HH:mm:ss"
+    # Use a Forms Timer for monitoring so UI never blocks
+    $monitorTimer = New-Object System.Windows.Forms.Timer
+    $monitorTimer.Interval = ($IntervalSeconds * 1000)
+    $monitorTimer.Add_Tick({
+        try {
+            $monitorTimer.Stop()
+            $cycle++
+            $ts = Get-Date -Format "HH:mm:ss"
 
-        Watch-Connections
-        Watch-Processes
-        Watch-Listeners
-        Watch-SecurityEvents
-        Watch-Registry
-        Watch-HostsFile
+            Watch-Connections
+            Watch-Processes
+            Watch-Listeners
+            Watch-SecurityEvents
+            Watch-Registry
+            Watch-HostsFile
 
-        if ($cycle % $fwCheckInterval -eq 0) {
-            Write-Status "[$ts] Running firmware integrity check..."
-            $fwChanges = Compare-FirmwareBaseline
-            if ($fwChanges -and $fwChanges.Count -gt 0) {
-                foreach ($change in $fwChanges) {
-                    Send-Alert "FIRMWARE $($change.Type)" "$($change.File) - $($change.Detail)" -Category "Firmware" -ExtraDetails @{
-                    "File Path"    = $change.File
-                    "Change Type"  = $change.Type
-                    "Detail"       = $change.Detail
+            if ($cycle % $fwCheckInterval -eq 0) {
+                Write-Status "[$ts] Running firmware integrity check..."
+                $fwChanges = Compare-FirmwareBaseline
+                if ($fwChanges -and $fwChanges.Count -gt 0) {
+                    foreach ($change in $fwChanges) {
+                        Send-Alert "FIRMWARE $($change.Type)" "$($change.File) - $($change.Detail)" -Category "Firmware" -ExtraDetails @{
+                            "File Path"    = $change.File
+                            "Change Type"  = $change.Type
+                            "Detail"       = $change.Detail
+                        }
+                    }
                 }
+
+                $drvChanges = Compare-DriverBaseline
+                if ($drvChanges -and $drvChanges.Count -gt 0) {
+                    foreach ($change in $drvChanges) {
+                        Send-Alert $change.Type $change.Detail -Category "Driver"
+                    }
+                }
+
+                $svcChanges = Compare-ServiceBaseline
+                if ($svcChanges -and $svcChanges.Count -gt 0) {
+                    foreach ($change in $svcChanges) {
+                        Send-Alert $change.Type $change.Detail -Category "Service"
+                    }
                 }
             }
 
-            $drvChanges = Compare-DriverBaseline
-            if ($drvChanges -and $drvChanges.Count -gt 0) {
-                foreach ($change in $drvChanges) {
-                    Send-Alert $change.Type $change.Detail -Category "Driver"
-                }
+            if ($cycle % 6 -eq 0) {
+                $uptime = (Get-Date) - $script:StartTime
+                $uptimeStr = "{0:D2}h {1:D2}m {2:D2}s" -f $uptime.Hours, $uptime.Minutes, $uptime.Seconds
+                Write-Host "[$ts] Uptime: $uptimeStr | Alerts: $($script:AlertCount) | Connections: $($script:KnownRemotes.Count) | Processes: $($script:KnownProcesses.Count)" -ForegroundColor DarkGray
             }
-
-            $svcChanges = Compare-ServiceBaseline
-            if ($svcChanges -and $svcChanges.Count -gt 0) {
-                foreach ($change in $svcChanges) {
-                    Send-Alert $change.Type $change.Detail -Category "Service"
-                }
-            }
+        } catch {
+            Write-Warn "Monitor tick error: $($_.Exception.Message)"
+        } finally {
+            if ($script:MonitoringRunning) { $monitorTimer.Start() }
         }
+    })
+    $monitorTimer.Start()
 
-        if ($cycle % 6 -eq 0) {
-            $uptime = (Get-Date) - $script:StartTime
-            $uptimeStr = "{0:D2}h {1:D2}m {2:D2}s" -f $uptime.Hours, $uptime.Minutes, $uptime.Seconds
-            Write-Host "[$ts] Uptime: $uptimeStr | Alerts: $($script:AlertCount) | Connections: $($script:KnownRemotes.Count) | Processes: $($script:KnownProcesses.Count)" -ForegroundColor DarkGray
-        }
-
-        # Process Windows Forms events so tray icon and click handlers stay responsive
-        [System.Windows.Forms.Application]::DoEvents()
-
-        Start-Sleep -Seconds $IntervalSeconds
-    }
+    # Run the Windows Forms message loop (keeps UI responsive)
+    [System.Windows.Forms.Application]::Run()
 }
 
 # --- START ---
@@ -1754,11 +1768,17 @@ try {
     Write-Log "ERROR: $($_.Exception.Message)" -Level "ERROR"
     Write-Alert "Monitoring error: $($_.Exception.Message)"
 } finally {
+    $script:MonitoringRunning = $false
     # Clean up tray icon
     if ($script:TrayIcon) {
-        $script:TrayIcon.Visible = $false
-        $script:TrayIcon.Dispose()
+        try { $script:TrayIcon.Visible = $false; $script:TrayIcon.Dispose() } catch {}
     }
+    # Clean up dashboard
+    if ($script:DashboardForm -and -not $script:DashboardForm.IsDisposed) {
+        try { $script:DashboardForm.Dispose() } catch {}
+    }
+    # Clean up timers
+    if ($script:DashTimer) { try { $script:DashTimer.Stop(); $script:DashTimer.Dispose() } catch {} }
     Write-Log "=== MONITORING STOPPED === Total alerts: $script:AlertCount" -Level "INFO"
     Write-Host "`nMonitoring stopped. Total alerts: $script:AlertCount" -ForegroundColor Yellow
     Write-Host "Log files: $LogDir" -ForegroundColor Cyan
