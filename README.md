@@ -1,70 +1,71 @@
-# SecurityMonitor - Sistem Guvenlik Izleme Araci
+# SecurityMonitor - System Security Monitoring Tool
 
-Donanim ve sistem seviyesinde surekli guvenlik izleme yapan PowerShell tabanli arac.
+A PowerShell-based tool that performs continuous hardware and system-level security monitoring.
 
-## Ozellikler
+## Features
 
-- **Ag Baglantisi Izleme**: Tum dis baglantilari anlik takip eder, bilinmeyen baglantilarda uyari verir
-- **Surec Izleme**: Yeni baslayan surecleri yakalar, imzasiz surecleri raporlar
-- **Firmware Butunluk Kontrolu**: Surucu ve firmware dosyalarinin SHA-256 hashlerini izler, degisiklik tespit eder
-- **Surucu Izleme**: Yeni yuklenen veya kaldirilan suruculer icin uyari uretir
-- **Servis Izleme**: Yeni eklenen servisleri tespit eder
-- **Kayit Defteri Izleme**: Kritik baslangiç anahtarlarindaki degisiklikleri yakalar
-- **Guvenlik Olayi Izleme**: Windows Event Log'dan sifeli giris, basarisiz giris denemeleri, yeni hesap olusturma gibi olaylari izler
-- **RDP Izleme**: Uzak Masaustu etkinlestirildiginde aninda uyari verir
-- **Hosts Dosyasi Izleme**: DNS yonlendirme degisikliklerini tespit eder
-- **Zaman Damgali Loglama**: Tum olaylar mahkemede kanit olarak kullanilabilecek formatta kaydedilir
+- **Network Connection Monitoring**: Tracks all outbound connections in real-time, alerts on unknown connections
+- **Process Monitoring**: Captures newly started processes, reports unsigned executables
+- **Firmware Integrity Check**: Monitors SHA-256 hashes of driver and firmware files, detects modifications
+- **Driver Monitoring**: Alerts when new drivers are loaded or existing ones are removed
+- **Service Monitoring**: Detects newly added services
+- **Registry Monitoring**: Captures changes to critical startup registry keys
+- **Security Event Monitoring**: Watches Windows Event Log for suspicious logons, failed login attempts, new account creation, etc.
+- **RDP Monitoring**: Immediately alerts when Remote Desktop is enabled
+- **Hosts File Monitoring**: Detects DNS redirection changes
+- **Timestamped Logging**: All events are recorded in a format suitable for forensic evidence
+- **Windows Toast Notifications**: Real-time desktop notifications for all security alerts
 
-## Gereksinimler
+## Requirements
 
 - Windows 10/11
 - PowerShell 5.1+
-- Yonetici (Administrator) yetkileri
+- Administrator privileges
 
-## Kurulum
+## Installation
 
 ```powershell
-# Yonetici olarak PowerShell acin
-cd C:\Users\<kullanici>\SecurityMonitor
+# Open PowerShell as Administrator
+cd C:\Users\<username>\SecurityMonitor
 powershell -ExecutionPolicy Bypass -File Install.ps1
 ```
 
-## Kullanim
+## Usage
 
 ```powershell
-# Normal mod (konsol ciktisi ile)
+# Normal mode (with console output)
 powershell -ExecutionPolicy Bypass -File SecurityMonitor.ps1
 
-# Sessiz mod (sadece uyarilarda bildirim)
+# Silent mode (notifications only on alerts)
 powershell -ExecutionPolicy Bypass -File SecurityMonitor.ps1 -Silent
 
-# Ozel tarama araligi (5 saniye)
+# Custom scan interval (5 seconds)
 powershell -ExecutionPolicy Bypass -File SecurityMonitor.ps1 -IntervalSeconds 5
 ```
 
-## Log Dosyalari
+## Log Files
 
-| Dosya | Icerik |
-|-------|--------|
-| `Logs/monitor_YYYY-MM-DD.log` | Genel izleme kayitlari |
-| `Logs/alerts_YYYY-MM-DD.log` | Sadece uyari olaylari |
-| `Logs/connections_YYYY-MM-DD.log` | Ag baglanti gecmisi |
-| `Logs/processes_YYYY-MM-DD.log` | Surec baslama/kapanma kayitlari |
+| File | Contents |
+|------|----------|
+| `Logs/monitor_YYYY-MM-DD.log` | General monitoring records |
+| `Logs/alerts_YYYY-MM-DD.log` | Alert events only |
+| `Logs/connections_YYYY-MM-DD.log` | Network connection history |
+| `Logs/processes_YYYY-MM-DD.log` | Process start/stop records |
 
-## Baseline Dosyalari
+## Baseline Files
 
-| Dosya | Icerik |
-|-------|--------|
-| `Baselines/firmware_hashes.json` | Firmware/surucu dosyasi hashleri |
-| `Baselines/driver_baseline.json` | Yuklu surucu listesi |
-| `Baselines/service_baseline.json` | Servis listesi |
+| File | Contents |
+|------|----------|
+| `Baselines/firmware_hashes.json` | Firmware/driver file hashes |
+| `Baselines/driver_baseline.json` | Loaded driver list |
+| `Baselines/service_baseline.json` | Service list |
 
-## Kaldirma
+## Uninstall
 
 ```powershell
 Unregister-ScheduledTask -TaskName "SecurityMonitor" -Confirm:$false
 ```
 
-## Lisans
+## License
 
 MIT
