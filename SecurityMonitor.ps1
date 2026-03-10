@@ -387,10 +387,12 @@ function Show-Dashboard {
     # Create page panels (each tab is a Panel - manual size/anchor, NOT Dock=Fill)
     $script:Pages = @{}
     $pages = $script:Pages
+    $contentW = $contentPanel.Width
+    $contentH = $contentPanel.Height
     foreach ($pageName in @("Status", "Alerts", "Settings", "Logs")) {
         $p = New-Object System.Windows.Forms.Panel
         $p.Location = New-Object System.Drawing.Point(0, 0)
-        $p.Size = $contentPanel.ClientSize
+        $p.Size = New-Object System.Drawing.Size($contentW, $contentH)
         $p.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
         $p.BackColor = $colBg
         $p.Visible = $false
@@ -1755,12 +1757,18 @@ function Show-Dashboard {
     })
     $script:DashTimer.Start()
 
-    # Set open tab BEFORE the Shown event fires
+    # Set open tab and switch page
     $script:DashboardOpenTab = $OpenTab
 
-    # Open default tab AFTER form is shown (ensures rendering works)
+    # Switch page immediately (sets Visible/BringToFront)
+    try { & $script:SwitchPageFn $OpenTab } catch { Write-Host "[!] SwitchPage error: $_" -ForegroundColor Red }
+
+    # Also switch after form is shown to ensure rendering
     $form.Add_Shown({
-        try { & $script:SwitchPageFn $script:DashboardOpenTab } catch {}
+        try {
+            & $script:SwitchPageFn $script:DashboardOpenTab
+            $script:ContentPanel.Refresh()
+        } catch { Write-Host "[!] Shown SwitchPage error: $_" -ForegroundColor Red }
     })
 
     $form.Show()
@@ -2596,7 +2604,76 @@ function Watch-RegistryTampering {
 
         # Windows Script Host disable
         @{ Path = "HKLM:\Software\Microsoft\Windows Script Host\Settings"; Name = "Enabled"; BadIf = "0"; Desc = "Windows Script Host DISABLED" },
-        @{ Path = "HKCU:\Software\Microsoft\Windows Script Host\Settings"; Name = "Enabled"; BadIf = "0"; Desc = "Windows Script Host DISABLED (user)" }
+        @{ Path = "HKCU:\Software\Microsoft\Windows Script Host\Settings"; Name = "Enabled"; BadIf = "0"; Desc = "Windows Script Host DISABLED (user)" },
+
+        # ═══ PowerShell Execution Policy tampering (blocks scripts from running) ═══
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell"; Name = "ExecutionPolicy"; BadIf = "Restricted"; Desc = "PowerShell ExecutionPolicy set to RESTRICTED - blocks ALL scripts" },
+        @{ Path = "HKCU:\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell"; Name = "ExecutionPolicy"; BadIf = "Restricted"; Desc = "PowerShell ExecutionPolicy RESTRICTED (user level)" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell"; Name = "EnableScripts"; BadIf = "0"; Desc = "PowerShell scripts DISABLED via Group Policy" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell"; Name = "ExecutionPolicy"; BadIf = "Restricted"; Desc = "PowerShell ExecutionPolicy RESTRICTED via GPO" },
+
+        # ═══ PowerShell Constrained Language Mode (cripples .NET access = kills WinForms GUI) ═══
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; Name = "__PSLockdownPolicy"; BadIf = "4"; Desc = "PowerShell CONSTRAINED LANGUAGE MODE - blocks .NET/WinForms/CIM calls" },
+
+        # ═══ IFEO targeting SecurityMonitor specifically ═══
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\SecurityMonitor.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger targeting SecurityMonitor!" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\pwsh.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on PowerShell 7 (pwsh.exe)" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\wscript.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on WScript" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\cscript.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on CScript" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\eventvwr.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Event Viewer" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\msconfig.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on MSConfig" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\perfmon.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Performance Monitor" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\procexp.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Process Explorer" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\procexp64.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Process Explorer 64" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\autoruns.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Autoruns" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\autoruns64.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Autoruns64" },
+
+        # ═══ Software Restriction Policies (SRP - can block PowerShell/scripts) ═══
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers"; Name = "DefaultLevel"; BadIf = "0"; Desc = "Software Restriction Policy: DEFAULT DISALLOWED - blocks unsigned executables" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers"; Name = "TransparentEnabled"; BadIf = "0"; Desc = "SRP transparency DISABLED - blocks DLL loading" },
+
+        # ═══ AppLocker (WDAC precursor - can block PowerShell scripts) ═══
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2\Script"; Name = "EnforcementMode"; BadIf = "1"; Desc = "AppLocker Script rules ENFORCED - may block PowerShell scripts" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2\Exe"; Name = "EnforcementMode"; BadIf = "1"; Desc = "AppLocker Exe rules ENFORCED - may block executables" },
+
+        # ═══ WMI/CIM tampering (SecurityMonitor uses CIM for CPU/RAM/process data) ═══
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\Winmgmt"; Name = "Start"; BadIf = "4"; Desc = "WMI Service DISABLED - breaks CIM/WMI monitoring queries" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\iphlpsvc"; Name = "Start"; BadIf = "4"; Desc = "IP Helper Service DISABLED - breaks network monitoring" },
+
+        # ═══ Windows Notification suppression (hides SecurityMonitor tray/toasts) ═══
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications"; Name = "ToastEnabled"; BadIf = "0"; Desc = "Toast notifications DISABLED - hides SecurityMonitor alerts" },
+        @{ Path = "HKCU:\Software\Policies\Microsoft\Windows\Explorer"; Name = "DisableNotificationCenter"; BadIf = "1"; Desc = "Notification Center DISABLED - hides all alerts" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer"; Name = "DisableNotificationCenter"; BadIf = "1"; Desc = "Notification Center DISABLED (machine policy)" },
+
+        # ═══ Remote access persistence (attacker maintaining access) ═══
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"; Name = "fDenyTSConnections"; BadIf = "0"; Desc = "Remote Desktop ENABLED at service level" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"; Name = "UserAuthentication"; BadIf = "0"; Desc = "RDP Network Level Authentication DISABLED - weaker security" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"; Name = "fAllowUnsolicited"; BadIf = "1"; Desc = "Unsolicited Remote Assistance ALLOWED" },
+
+        # ═══ Scheduled Tasks tampering (can kill SecurityMonitor periodically) ═══
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree"; Name = "(KeyExists)"; BadIf = "checkchildren"; Desc = "Scheduled task tree check" },
+
+        # ═══ Windows Update disable (prevents security patches) ═══
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"; Name = "NoAutoUpdate"; BadIf = "1"; Desc = "Windows Auto-Update DISABLED via policy" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\wuauserv"; Name = "Start"; BadIf = "4"; Desc = "Windows Update Service DISABLED" },
+
+        # ═══ Credential stealing preparation ═══
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest"; Name = "UseLogonCredential"; BadIf = "1"; Desc = "WDigest cleartext passwords ENABLED - credential theft setup" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"; Name = "DisableRestrictedAdmin"; BadIf = "0"; Desc = "Restricted Admin mode manipulation detected" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"; Name = "RunAsPPL"; BadIf = "0"; Desc = "LSA Protection DISABLED - allows credential dumping" },
+
+        # ═══ Network security weakening ═══
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters"; Name = "SMB1"; BadIf = "1"; Desc = "SMBv1 ENABLED - vulnerable to EternalBlue/WannaCry" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\LanManServer\Parameters"; Name = "RequireSecuritySignature"; BadIf = "0"; Desc = "SMB signing NOT required - allows relay attacks" },
+
+        # ═══ Boot/startup hijacking ═══
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"; Name = "Userinit"; BadIf = "notdefault"; Desc = "Winlogon Userinit HIJACKED" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"; Name = "AppInit_DLLs"; BadIf = "exists_nonempty"; Desc = "AppInit_DLLs SET - DLL injection on every process" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"; Name = "LoadAppInit_DLLs"; BadIf = "1"; Desc = "AppInit_DLLs loading ENABLED - DLL injection active" },
+
+        # ═══ Audit policy tampering ═══
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit"; Name = "ProcessCreationIncludeCmdLine_Enabled"; BadIf = "0"; Desc = "Process command-line auditing DISABLED - hides attacker activity" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Security"; Name = "MaxSize"; BadIf = "toosmall"; Desc = "Security event log size check" }
     )
 
     foreach ($check in $tamperChecks) {
@@ -2635,6 +2712,65 @@ function Watch-RegistryTampering {
                 }
                 continue
             }
+
+            # Special case: Winlogon Userinit check
+            if ($check.BadIf -eq "notdefault") {
+                $val = (Get-ItemProperty -Path $check.Path -Name $check.Name -ErrorAction SilentlyContinue).$($check.Name)
+                $defaultUserinit = "C:\Windows\system32\userinit.exe,"
+                if ($val -and $val -ne $defaultUserinit -and $val -ne "C:\Windows\system32\userinit.exe") {
+                    $alertKey = "TAMPER:$($check.Path)\$($check.Name)"
+                    if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
+                        $script:TamperAlerted[$alertKey] = $true
+                        Send-Alert "REGISTRY TAMPERING" "$($check.Desc) - Current: $val" -Category "Registry Tampering" -ExtraDetails @{
+                            "Registry Path"  = $check.Path
+                            "Value Name"     = $check.Name
+                            "Current Value"  = "$val"
+                            "Expected"       = $defaultUserinit
+                            "Threat"         = "Startup hijack - malware injected into boot sequence"
+                        }
+                    }
+                }
+                continue
+            }
+
+            # Special case: AppInit_DLLs non-empty check
+            if ($check.BadIf -eq "exists_nonempty") {
+                $val = (Get-ItemProperty -Path $check.Path -Name $check.Name -ErrorAction SilentlyContinue).$($check.Name)
+                if ($val -and "$val".Trim().Length -gt 0) {
+                    $alertKey = "TAMPER:$($check.Path)\$($check.Name)"
+                    if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
+                        $script:TamperAlerted[$alertKey] = $true
+                        Send-Alert "REGISTRY TAMPERING" "$($check.Desc) - DLLs: $val" -Category "Registry Tampering" -ExtraDetails @{
+                            "Registry Path"  = $check.Path
+                            "Injected DLLs"  = "$val"
+                            "Threat"         = "DLL injection into every process via AppInit_DLLs"
+                            "Action"         = "Clear AppInit_DLLs value and set LoadAppInit_DLLs to 0"
+                        }
+                    }
+                }
+                continue
+            }
+
+            # Special case: Event log size too small (attacker shrinks to overwrite evidence)
+            if ($check.BadIf -eq "toosmall") {
+                $val = (Get-ItemProperty -Path $check.Path -Name $check.Name -ErrorAction SilentlyContinue).$($check.Name)
+                if ($val -and [int]$val -lt 1048576) {
+                    $alertKey = "TAMPER:$($check.Path)\$($check.Name)"
+                    if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
+                        $script:TamperAlerted[$alertKey] = $true
+                        Send-Alert "REGISTRY TAMPERING" "Security event log MAX SIZE reduced to $([math]::Round($val/1024))KB" -Category "Registry Tampering" -ExtraDetails @{
+                            "Registry Path"  = $check.Path
+                            "Current Size"   = "$([math]::Round($val/1024))KB"
+                            "Minimum Safe"   = "1024KB (1MB)"
+                            "Threat"         = "Small log size causes rapid overwrite - destroys forensic evidence"
+                        }
+                    }
+                }
+                continue
+            }
+
+            # Special case: Skip scheduled task tree check (handled separately below)
+            if ($check.BadIf -eq "checkchildren") { continue }
 
             if (-not (Test-Path $check.Path)) { continue }
             $val = (Get-ItemProperty -Path $check.Path -Name $check.Name -ErrorAction SilentlyContinue).$($check.Name)
@@ -2706,6 +2842,70 @@ function Watch-RegistryTampering {
                                 "Excluded Target"  = $p.Name
                                 "Threat"           = "Malware often adds Defender exclusions to hide itself"
                                 "Action"           = "Verify this exclusion is legitimate"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } catch {}
+
+    # ═══ Check for suspicious scheduled tasks targeting PowerShell/SecurityMonitor ═══
+    try {
+        $suspiciousTasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
+            $_.State -ne "Disabled" -and $_.Actions
+        } | ForEach-Object {
+            $task = $_
+            foreach ($action in $task.Actions) {
+                if ($action.Execute -match '(?i)(powershell|pwsh|cmd|wscript|cscript)' -and
+                    $action.Arguments -match '(?i)(kill|stop|taskkill|SecurityMonitor|Remove-Item|del\s|erase)') {
+                    [PSCustomObject]@{
+                        TaskName = $task.TaskName
+                        TaskPath = $task.TaskPath
+                        Execute  = $action.Execute
+                        Args     = $action.Arguments
+                    }
+                }
+            }
+        }
+        foreach ($st in $suspiciousTasks) {
+            $alertKey = "TAMPER:Task:$($st.TaskPath)$($st.TaskName)"
+            if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
+                $script:TamperAlerted[$alertKey] = $true
+                Send-Alert "SUSPICIOUS SCHEDULED TASK" "Task '$($st.TaskName)' may target SecurityMonitor" -Category "Registry Tampering" -ExtraDetails @{
+                    "Task Name" = $st.TaskName
+                    "Task Path" = $st.TaskPath
+                    "Command"   = "$($st.Execute) $($st.Args)"
+                    "Threat"    = "Scheduled task may kill/disable SecurityMonitor"
+                    "Action"    = "Disable-ScheduledTask -TaskName '$($st.TaskName)' -TaskPath '$($st.TaskPath)'"
+                }
+            }
+        }
+    } catch {}
+
+    # ═══ Check Run/RunOnce for anti-SecurityMonitor entries ═══
+    try {
+        $runPaths = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+            "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+            "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
+        )
+        foreach ($rp in $runPaths) {
+            if (-not (Test-Path $rp)) { continue }
+            $props = Get-ItemProperty -Path $rp -ErrorAction SilentlyContinue
+            foreach ($p in $props.PSObject.Properties) {
+                if ($p.Name -notin @("PSPath","PSParentPath","PSChildName","PSDrive","PSProvider")) {
+                    if ($p.Value -match '(?i)(taskkill.*powershell|stop.*SecurityMonitor|del.*SecurityMonitor|Remove-Item.*SecurityMonitor|kill.*powershell)') {
+                        $alertKey = "TAMPER:Run:$rp\$($p.Name)"
+                        if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
+                            $script:TamperAlerted[$alertKey] = $true
+                            Send-Alert "ANTI-MONITOR STARTUP ENTRY" "Run key '$($p.Name)' targets SecurityMonitor" -Category "Registry Tampering" -ExtraDetails @{
+                                "Registry Path" = $rp
+                                "Entry Name"    = $p.Name
+                                "Command"       = "$($p.Value)"
+                                "Threat"        = "Startup entry designed to kill SecurityMonitor on boot"
+                                "Action"        = "Remove-ItemProperty -Path '$rp' -Name '$($p.Name)'"
                             }
                         }
                     }
