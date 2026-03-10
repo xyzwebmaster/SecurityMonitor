@@ -915,12 +915,24 @@ function Show-Dashboard {
         })
     }
 
+    # Reposition visible nav buttons (collapses gaps when a button is hidden)
+    $script:RepositionNavButtons = {
+        $y = 105
+        foreach ($nb in $script:NavButtons) {
+            if ($nb.Visible) {
+                $nb.Location = New-Object System.Drawing.Point(8, $y)
+                $y += 44
+            }
+        }
+    }
+
     # Hide AI Threats tab if not enabled in config
     $aiEnabledProp = $script:NotifyConfig.PSObject.Properties["EnableAiDetection"]
     $script:AiFeatureEnabled = if ($null -eq $aiEnabledProp) { $false } else { $aiEnabledProp.Value -eq $true }
     foreach ($nb in $navButtons) {
         if ($nb.Tag -eq "AI Threats") { $nb.Visible = $script:AiFeatureEnabled }
     }
+    & $script:RepositionNavButtons
 
     # ═══════════════════════════════════════════════════════════════
     #  PAGE 1: STATUS (live overview)
@@ -2996,6 +3008,7 @@ try {
                         $nb.Visible = $aiEnabled
                     }
                 }
+                & $script:RepositionNavButtons
                 # Show/hide AI panel on Status page
                 if ($script:AiStatusPanel) { $script:AiStatusPanel.Visible = $aiEnabled }
                 # If AI was just disabled and we're on that page, switch away
