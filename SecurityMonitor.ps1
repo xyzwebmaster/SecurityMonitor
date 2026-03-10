@@ -1572,6 +1572,100 @@ try {
     })
     $detailBox.Controls.Add($restoreRegBtn)
 
+    # Service Action button (Stop/Disable or Start/Enable)
+    $script:ServiceActionBtn = New-Object System.Windows.Forms.Button
+    $serviceActionBtn = $script:ServiceActionBtn
+    $serviceActionBtn.Text = "Stop Service"
+    $serviceActionBtn.Location = New-Object System.Drawing.Point(15, 300)
+    $serviceActionBtn.Size = New-Object System.Drawing.Size(240, 34)
+    $serviceActionBtn.FlatStyle = "Flat"
+    $serviceActionBtn.BackColor = [System.Drawing.Color]::FromArgb(180, 100, 0)
+    $serviceActionBtn.ForeColor = $colTextMain
+    $serviceActionBtn.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $serviceActionBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $serviceActionBtn.Visible = $false
+    $serviceActionBtn.Tag = $null
+    $serviceActionBtn.Add_Click({
+        $info = $this.Tag
+        if (-not $info) { return }
+        $svcName = $info.ServiceName
+        $action  = $info.Action  # "stop" or "start"
+
+        $actionText = if ($action -eq "stop") { "stop and disable" } else { "start and enable" }
+        $confirm = [System.Windows.Forms.MessageBox]::Show(
+            "Service: $svcName`n`nAre you sure you want to $actionText this service?",
+            "Service Action - Confirm",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+        if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+
+        try {
+            $tmpScript = [System.IO.Path]::GetTempFileName() + ".ps1"
+            $tmpResult = [System.IO.Path]::GetTempFileName()
+            if ($action -eq "stop") {
+                $scriptContent = @"
+try {
+    Stop-Service -Name '$svcName' -Force -ErrorAction Stop
+    Set-Service -Name '$svcName' -StartupType Disabled -ErrorAction Stop
+    'SUCCESS' | Set-Content -Path '$tmpResult' -Encoding UTF8
+} catch {
+    "ERROR: `$(`$_.Exception.Message)" | Set-Content -Path '$tmpResult' -Encoding UTF8
+}
+"@
+            } else {
+                $scriptContent = @"
+try {
+    Set-Service -Name '$svcName' -StartupType Automatic -ErrorAction Stop
+    Start-Service -Name '$svcName' -ErrorAction Stop
+    'SUCCESS' | Set-Content -Path '$tmpResult' -Encoding UTF8
+} catch {
+    "ERROR: `$(`$_.Exception.Message)" | Set-Content -Path '$tmpResult' -Encoding UTF8
+}
+"@
+            }
+            $scriptContent | Set-Content -Path $tmpScript -Encoding UTF8
+            $p = Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tmpScript`"" -Verb RunAs -PassThru -WindowStyle Hidden -ErrorAction Stop
+            $p.WaitForExit(15000)
+
+            if (Test-Path $tmpResult) {
+                $result = (Get-Content $tmpResult -Raw).Trim()
+                if ($result -eq "SUCCESS") {
+                    if ($action -eq "stop") {
+                        $this.Text = "Service stopped"
+                        $this.BackColor = [System.Drawing.Color]::FromArgb(30, 130, 60)
+                        # Switch to reverse action
+                        $this.Tag = @{ ServiceName = $svcName; Action = "start" }
+                        # After a short delay, offer the reverse action
+                        $this.Text = "Start Service"
+                        $this.BackColor = [System.Drawing.Color]::FromArgb(40, 100, 180)
+                        $this.Enabled = $true
+                    } else {
+                        $this.Text = "Service started"
+                        $this.BackColor = [System.Drawing.Color]::FromArgb(30, 130, 60)
+                        $this.Tag = @{ ServiceName = $svcName; Action = "stop" }
+                        $this.Text = "Stop Service"
+                        $this.BackColor = [System.Drawing.Color]::FromArgb(180, 100, 0)
+                        $this.Enabled = $true
+                    }
+                } else {
+                    [System.Windows.Forms.MessageBox]::Show($result, "Service Action - Error", "OK", "Error")
+                }
+            } else {
+                [System.Windows.Forms.MessageBox]::Show("Operation timed out.", "Service Action", "OK", "Warning")
+            }
+            Remove-Item $tmpScript -Force -ErrorAction SilentlyContinue
+            Remove-Item $tmpResult -Force -ErrorAction SilentlyContinue
+        } catch {
+            if ($_.Exception.Message -match "canceled by the user") {
+                [System.Windows.Forms.MessageBox]::Show("UAC elevation was cancelled.", "Service Action", "OK", "Information")
+            } else {
+                [System.Windows.Forms.MessageBox]::Show("Error: $($_.Exception.Message)", "Service Action - Error", "OK", "Error")
+            }
+        }
+    })
+    $detailBox.Controls.Add($serviceActionBtn)
+
     # Kill Process button
     $script:KillProcessBtn = New-Object System.Windows.Forms.Button
     $killProcessBtn = $script:KillProcessBtn
@@ -1720,6 +1814,7 @@ try {
             $script:BlockIpBtn.Visible = $false
             $script:RegeditBtn.Visible = $false
             $script:RestoreRegBtn.Visible = $false
+            $script:ServiceActionBtn.Visible = $false
             $script:KillProcessBtn.Visible = $false
 
             # Row 1: OpenLog is always shown + context buttons
@@ -1813,6 +1908,27 @@ try {
                 }
             }
 
+            # Show Service Action button if alert has Service Name
+            $svcName = $ad.Details["Service Name"]
+            if ($svcName -and $ad.Category -eq "Service") {
+                $svcStatus = $ad.Details["Status"]
+                if ($svcStatus -eq "Running") {
+                    $script:ServiceActionBtn.Text = "Stop Service: $svcName"
+                    $script:ServiceActionBtn.BackColor = [System.Drawing.Color]::FromArgb(180, 100, 0)
+                    $script:ServiceActionBtn.Tag = @{ ServiceName = $svcName; Action = "stop" }
+                } else {
+                    $script:ServiceActionBtn.Text = "Start Service: $svcName"
+                    $script:ServiceActionBtn.BackColor = [System.Drawing.Color]::FromArgb(40, 100, 180)
+                    $script:ServiceActionBtn.Tag = @{ ServiceName = $svcName; Action = "start" }
+                }
+                $script:ServiceActionBtn.Enabled = $true
+                $svcX = $btnX
+                if ($ad.RemoteIP) { $svcX = $btnX + $script:BlockIpBtn.Width + 10 }
+                if ($script:RestoreRegBtn.Visible) { $svcX = $script:RestoreRegBtn.Right + 10 }
+                $script:ServiceActionBtn.Location = New-Object System.Drawing.Point($svcX, $btnRow2Y)
+                $script:ServiceActionBtn.Visible = $true
+            }
+
             # Show Kill Process button if alert has PID
             $alertPid = $ad.Details["PID"]
             if ($alertPid) {
@@ -1824,10 +1940,11 @@ try {
                 $script:KillProcessBtn.Text = "Kill Process (PID: $alertPid)"
                 $script:KillProcessBtn.BackColor = [System.Drawing.Color]::FromArgb(160, 40, 40)
                 $script:KillProcessBtn.Enabled = $true
-                # Position: Row 2, after Block IP if visible, or after Restore Reg, or start of row
+                # Position: Row 2, after other visible buttons
                 $killX = $btnX
                 if ($ad.RemoteIP) { $killX = $btnX + $script:BlockIpBtn.Width + 10 }
                 if ($script:RestoreRegBtn.Visible) { $killX = $script:RestoreRegBtn.Right + 10 }
+                if ($script:ServiceActionBtn.Visible) { $killX = $script:ServiceActionBtn.Right + 10 }
                 $script:KillProcessBtn.Location = New-Object System.Drawing.Point($killX, $btnRow2Y)
                 $script:KillProcessBtn.Visible = $true
             }
@@ -1838,6 +1955,7 @@ try {
             $script:RegeditBtn.BringToFront()
             $script:BlockIpBtn.BringToFront()
             $script:RestoreRegBtn.BringToFront()
+            $script:ServiceActionBtn.BringToFront()
             $script:KillProcessBtn.BringToFront()
         } catch {}
     })
@@ -3018,12 +3136,22 @@ function New-ServiceBaseline {
 function Compare-ServiceBaseline {
     if (-not (Test-Path $ServiceBaseline)) { return }
     $baseline = Get-Content $ServiceBaseline -Raw | ConvertFrom-Json
-    $current = Get-Service | Select-Object Name, Status, StartType
+    $current = Get-Service | Select-Object Name, DisplayName, Status, StartType
     $baseNames = $baseline | ForEach-Object { $_.Name }
     $changes = @()
     foreach ($s in $current) {
         if ($s.Name -notin $baseNames) {
-            $changes += @{ Service = $s.Name; Type = "NEW_SERVICE"; Detail = "New service detected: $($s.Name) [$($s.Status)]" }
+            $changes += @{
+                Service     = $s.Name
+                Type        = "NEW_SERVICE"
+                Detail      = "New service detected: $($s.DisplayName) [$($s.Status)]"
+                ExtraDetails = @{
+                    "Service Name"    = $s.Name
+                    "Display Name"    = "$($s.DisplayName)"
+                    "Status"          = "$($s.Status)"
+                    "Start Type"      = "$($s.StartType)"
+                }
+            }
         }
     }
     return $changes
@@ -4119,7 +4247,7 @@ function Start-Monitoring {
                         $drvChanges = Compare-DriverBaseline
                         if ($drvChanges) { foreach ($c in $drvChanges) { Send-Alert $c.Type $c.Detail -Category "Driver" } }
                         $svcChanges = Compare-ServiceBaseline
-                        if ($svcChanges) { foreach ($c in $svcChanges) { Send-Alert $c.Type $c.Detail -Category "Service" } }
+                        if ($svcChanges) { foreach ($c in $svcChanges) { Send-Alert $c.Type $c.Detail -Category "Service" -ExtraDetails $c.ExtraDetails } }
                     }
 
                     if ($script:MonitorCycle % 6 -eq 0) {
