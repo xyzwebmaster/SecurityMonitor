@@ -193,6 +193,30 @@ if (-not $existingTask) {
     Write-Host "[+] Auto-start already registered" -ForegroundColor Green
 }
 
+# --- DESKTOP SHORTCUT ---
+$desktopPath = [System.Environment]::GetFolderPath("Desktop")
+$shortcutPath = Join-Path $desktopPath "SecurityMonitor.lnk"
+if (-not (Test-Path $shortcutPath)) {
+    try {
+        $scriptPath = $MyInvocation.MyCommand.Path
+        if ($scriptPath) {
+            $shell = New-Object -ComObject WScript.Shell
+            $shortcut = $shell.CreateShortcut($shortcutPath)
+            $shortcut.TargetPath = "powershell.exe"
+            $shortcut.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`""
+            $shortcut.WorkingDirectory = $PSScriptRoot
+            $shortcut.Description = "SecurityMonitor - System Security Monitoring"
+            $shortcut.IconLocation = "shell32.dll,77"
+            $shortcut.Save()
+            Write-Host "[+] Desktop shortcut created: $shortcutPath" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "[~] Could not create desktop shortcut: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "[+] Desktop shortcut already exists" -ForegroundColor Green
+}
+
 # --- CONFIGURATION ---
 $ErrorActionPreference = "SilentlyContinue"
 $script:StartTime = Get-Date
@@ -1261,11 +1285,11 @@ function Initialize-TrayIcon {
 
     $script:TrayIcon = New-Object System.Windows.Forms.NotifyIcon
     $script:TrayIcon.Icon = [System.Drawing.SystemIcons]::Shield
-    $script:TrayIcon.Text = "SecurityMonitor - Click to open Dashboard"
+    $script:TrayIcon.Text = "SecurityMonitor - Double-click to open Dashboard"
     $script:TrayIcon.Visible = $true
 
-    # LEFT CLICK on tray icon → open Dashboard
-    $script:TrayIcon.Add_MouseClick({
+    # DOUBLE CLICK on tray icon → open Dashboard
+    $script:TrayIcon.Add_MouseDoubleClick({
         param($s, $e)
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
             try { Show-Dashboard } catch { Write-Host "[!] Dashboard error: $_" -ForegroundColor Red }
