@@ -60,7 +60,7 @@ A PowerShell-based security monitoring tool with a modern dark-themed WinForms d
 Download and run the installer in one command — downloads all project files, installs HollowsHunter, creates desktop shortcut, auto-start task, and begins monitoring:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $d=\"$env:USERPROFILE\SecurityMonitor\"; md $d -Force >$null; Invoke-WebRequest 'https://github.com/xyzwebmaster/SecurityMonitor/archive/refs/heads/master.zip' -OutFile '$env:TEMP\SM.zip' -UseBasicParsing; Expand-Archive '$env:TEMP\SM.zip' '$env:TEMP\SM_ext' -Force; cp '$env:TEMP\SM_ext\SecurityMonitor-master\*' $d -Recurse -Force; md '$d\Tools' -Force >$null; Invoke-WebRequest 'https://github.com/hasherezade/hollows_hunter/releases/download/v0.4.1.1/hollows_hunter64.exe' -OutFile '$d\Tools\hollows_hunter.exe' -UseBasicParsing; rm '$env:TEMP\SM.zip','$env:TEMP\SM_ext' -Recurse -Force -EA 0; & '$d\Install.ps1'"
+powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest 'https://raw.githubusercontent.com/xyzwebmaster/SecurityMonitor/master/Install.ps1' -OutFile '$env:TEMP\SM_Install.ps1' -UseBasicParsing; & '$env:TEMP\SM_Install.ps1'"
 ```
 
 Or if you already have the files locally:
