@@ -350,11 +350,13 @@ function Show-Dashboard {
 
     # ── Content area (right side) ──
     $contentPanel = New-Object System.Windows.Forms.Panel
-    $contentPanel.Location = New-Object System.Drawing.Point(200, 0)
-    $contentPanel.Size = New-Object System.Drawing.Size(850, 680)
     $contentPanel.BackColor = $colBg
     $contentPanel.Dock = "Fill"
+    $contentPanel.Padding = New-Object System.Windows.Forms.Padding(0)
     $form.Controls.Add($contentPanel)
+
+    # Fix dock z-order: sidebar must dock Left BEFORE contentPanel fills remaining space
+    $sidebar.BringToFront()
 
     # Create page panels (each tab is a Panel that fills contentPanel)
     $script:Pages = @{}
@@ -479,6 +481,7 @@ function Show-Dashboard {
     $statusDot.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
     $statusDot.ForeColor = $colGreen
     $statusDot.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+    $statusDot.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
     $statusPage.Controls.Add($statusDot)
 
     # Stat cards
@@ -520,6 +523,7 @@ function Show-Dashboard {
     $infoBox.Location = New-Object System.Drawing.Point(25, 170)
     $infoBox.Size = New-Object System.Drawing.Size(770, 75)
     $infoBox.BackColor = $colCard
+    $infoBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
     $statusPage.Controls.Add($infoBox)
 
     $infoItems = @(
@@ -560,6 +564,7 @@ function Show-Dashboard {
     $recentList.Name = "recentList"
     $recentList.Location = New-Object System.Drawing.Point(25, 288)
     $recentList.Size = New-Object System.Drawing.Size(770, 300)
+    $recentList.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
     $recentList.View = "Details"
     $recentList.FullRowSelect = $true
     $recentList.GridLines = $true
@@ -603,6 +608,7 @@ function Show-Dashboard {
     $alertCountLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10)
     $alertCountLabel.ForeColor = $colTextDim
     $alertCountLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+    $alertCountLabel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
     $alertsPage.Controls.Add($alertCountLabel)
 
     # Full alert list
@@ -611,6 +617,7 @@ function Show-Dashboard {
     $alertListView.Name = "alertListView"
     $alertListView.Location = New-Object System.Drawing.Point(25, 58)
     $alertListView.Size = New-Object System.Drawing.Size(770, 290)
+    $alertListView.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
     $alertListView.View = "Details"
     $alertListView.FullRowSelect = $true
     $alertListView.GridLines = $true
@@ -630,6 +637,7 @@ function Show-Dashboard {
     $detailBox.Size = New-Object System.Drawing.Size(770, 230)
     $detailBox.BackColor = $colCard
     $detailBox.AutoScroll = $true
+    $detailBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
     $alertsPage.Controls.Add($detailBox)
 
     $script:DetailTitle = New-Object System.Windows.Forms.Label
@@ -813,6 +821,7 @@ function Show-Dashboard {
         $card.Location = New-Object System.Drawing.Point(25, $sy)
         $card.Size = New-Object System.Drawing.Size(770, 48)
         $card.BackColor = $colCard
+        $card.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
         $settingsPage.Controls.Add($card)
 
         $iconLbl = New-Object System.Windows.Forms.Label
@@ -915,6 +924,7 @@ function Show-Dashboard {
         $logCard.Location = New-Object System.Drawing.Point(25, $ly)
         $logCard.Size = New-Object System.Drawing.Size(770, 60)
         $logCard.BackColor = $colCard
+        $logCard.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
         $logsPage.Controls.Add($logCard)
 
         $lfLabel = New-Object System.Windows.Forms.Label
@@ -941,6 +951,7 @@ function Show-Dashboard {
         $openBtn.BackColor = $colAccentDim
         $openBtn.ForeColor = $colTextMain
         $openBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $openBtn.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
         $openBtn.Tag = $lf.File
         $openBtn.Add_Click({ if ($this.Tag -and (Test-Path $this.Tag)) { Start-Process notepad.exe $this.Tag } })
         $logCard.Controls.Add($openBtn)
@@ -953,6 +964,7 @@ function Show-Dashboard {
         $folderBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
         $folderBtn.ForeColor = $colTextMain
         $folderBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $folderBtn.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
         $folderBtn.Tag = $LogDir
         $folderBtn.Add_Click({ Start-Process explorer.exe $this.Tag })
         $logCard.Controls.Add($folderBtn)
@@ -980,6 +992,7 @@ function Show-Dashboard {
         $blCard.Location = New-Object System.Drawing.Point(25, $ly)
         $blCard.Size = New-Object System.Drawing.Size(770, 44)
         $blCard.BackColor = $colCard
+        $blCard.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
         $logsPage.Controls.Add($blCard)
 
         $blLabel = New-Object System.Windows.Forms.Label
@@ -998,6 +1011,7 @@ function Show-Dashboard {
         $blOpenBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
         $blOpenBtn.ForeColor = $colTextMain
         $blOpenBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $blOpenBtn.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
         $blOpenBtn.Tag = $bl.File
         $blOpenBtn.Add_Click({ if ($this.Tag -and (Test-Path $this.Tag)) { Start-Process notepad.exe $this.Tag } })
         $blCard.Controls.Add($blOpenBtn)
