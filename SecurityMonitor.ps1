@@ -193,28 +193,23 @@ if (-not $existingTask) {
     Write-Host "[+] Auto-start already registered" -ForegroundColor Green
 }
 
-# --- DESKTOP SHORTCUT ---
+# --- DESKTOP SHORTCUT (points to Launcher.ps1 - smart start/open) ---
 $desktopPath = [System.Environment]::GetFolderPath("Desktop")
 $shortcutPath = Join-Path $desktopPath "SecurityMonitor.lnk"
-if (-not (Test-Path $shortcutPath)) {
-    try {
-        $scriptPath = $MyInvocation.MyCommand.Path
-        if ($scriptPath) {
-            $shell = New-Object -ComObject WScript.Shell
-            $shortcut = $shell.CreateShortcut($shortcutPath)
-            $shortcut.TargetPath = "powershell.exe"
-            $shortcut.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`""
-            $shortcut.WorkingDirectory = $PSScriptRoot
-            $shortcut.Description = "SecurityMonitor - System Security Monitoring"
-            $shortcut.IconLocation = "shell32.dll,77"
-            $shortcut.Save()
-            Write-Host "[+] Desktop shortcut created: $shortcutPath" -ForegroundColor Green
-        }
-    } catch {
-        Write-Host "[~] Could not create desktop shortcut: $($_.Exception.Message)" -ForegroundColor Yellow
-    }
-} else {
-    Write-Host "[+] Desktop shortcut already exists" -ForegroundColor Green
+$launcherPath = Join-Path $PSScriptRoot "Launcher.ps1"
+# Always recreate shortcut to ensure it points to Launcher.ps1
+try {
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = "powershell.exe"
+    $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcherPath`""
+    $shortcut.WorkingDirectory = $PSScriptRoot
+    $shortcut.Description = "SecurityMonitor - Start or open dashboard"
+    $shortcut.IconLocation = "shell32.dll,77"
+    $shortcut.Save()
+    Write-Host "[+] Desktop shortcut created/updated: $shortcutPath" -ForegroundColor Green
+} catch {
+    Write-Host "[~] Could not create desktop shortcut: $($_.Exception.Message)" -ForegroundColor Yellow
 }
 
 # --- CONFIGURATION ---
@@ -314,7 +309,7 @@ function Show-Dashboard {
     $form.FormBorderStyle = "Sizable"
     $form.TopMost = $false
 
-    # Minimize to tray instead of closing — pause timers to save resources
+    # Minimize to tray instead of closing - pause timers to save resources
     $form.Add_FormClosing({
         param($s, $e)
         $e.Cancel = $true
@@ -325,7 +320,7 @@ function Show-Dashboard {
 
     $script:DashboardForm = $form
 
-    # ── Sidebar (left navigation) — no Dock, manual position ──
+    # ── Sidebar (left navigation) - no Dock, manual position ──
     $sidebar = New-Object System.Windows.Forms.Panel
     $sidebar.Location = New-Object System.Drawing.Point(0, 0)
     $sidebar.Size = New-Object System.Drawing.Size(200, $form.ClientSize.Height)
@@ -378,7 +373,7 @@ function Show-Dashboard {
     $collapseBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
     $sidebar.Controls.Add($collapseBtn)
 
-    # ── Content area (right side) — positioned to sidebar's right, resizes with form ──
+    # ── Content area (right side) - positioned to sidebar's right, resizes with form ──
     $contentPanel = New-Object System.Windows.Forms.Panel
     $contentPanel.BackColor = $colBg
     $contentPanel.Location = New-Object System.Drawing.Point($sidebar.Width, 0)
@@ -389,7 +384,7 @@ function Show-Dashboard {
     # Store contentPanel in script scope for collapse/expand repositioning
     $script:ContentPanel = $contentPanel
 
-    # Create page panels (each tab is a Panel — manual size/anchor, NOT Dock=Fill)
+    # Create page panels (each tab is a Panel - manual size/anchor, NOT Dock=Fill)
     $script:Pages = @{}
     $pages = $script:Pages
     foreach ($pageName in @("Status", "Alerts", "Settings", "Logs")) {
@@ -607,7 +602,7 @@ function Show-Dashboard {
         $card.Add_MouseLeave($hoverLeave)
         foreach ($c in $card.Controls) { $c.Add_MouseEnter({ $this.Parent.BackColor = [System.Drawing.Color]::FromArgb(42, 42, 62) }); $c.Add_MouseLeave({ $this.Parent.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 48) }) }
 
-        # Click handler — propagate to all children
+        # Click handler - propagate to all children
         if ($onClick) {
             $card.Add_Click($onClick)
             foreach ($c in $card.Controls) { $c.Add_Click($onClick) }
@@ -1913,7 +1908,7 @@ function Initialize-TrayIcon {
         $g.Dispose()
         $hIcon = $bmp.GetHicon()
         $script:TrayIcon.Icon = [System.Drawing.Icon]::FromHandle($hIcon)
-        # Keep bitmap alive — disposing can invalidate icon handle on some .NET versions
+        # Keep bitmap alive - disposing can invalidate icon handle on some .NET versions
         $script:TrayIconBmp = $bmp
     } catch {
         $script:TrayIcon.Icon = [System.Drawing.SystemIcons]::Shield
@@ -1922,7 +1917,7 @@ function Initialize-TrayIcon {
     $script:TrayIcon.Text = "SecurityMonitor v7.0"
     $script:TrayIcon.Visible = $true
 
-    # Force tray icon to appear on first run — toggle visibility after message pump starts
+    # Force tray icon to appear on first run - toggle visibility after message pump starts
     $refreshTimer = New-Object System.Windows.Forms.Timer
     $refreshTimer.Interval = 500
     $refreshTimer.Add_Tick({
@@ -2727,7 +2722,7 @@ function Start-Monitoring {
     $banner = @"
 
   ======================================================
-    SECURITY MONITORING SYSTEM v6.0
+    SECURITY MONITORING SYSTEM v7.1
     Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
     Computer: $env:COMPUTERNAME
     User: $env:USERNAME
@@ -2739,7 +2734,24 @@ function Start-Monitoring {
     Write-Host $banner -ForegroundColor Cyan
     Write-Log "=== MONITORING STARTED === Computer: $env:COMPUTERNAME | User: $env:USERNAME" -Level "INFO"
 
-    # Initialize system tray icon FIRST — must happen before Application.Run()
+    # ── Acquire a system-wide mutex so Launcher.ps1 can detect us ──
+    $script:AppMutex = $null
+    try {
+        $createdNew = $false
+        $script:AppMutex = [System.Threading.Mutex]::new($true, "Global\SecurityMonitor_Running", [ref]$createdNew)
+        if (-not $createdNew) {
+            Write-Warn "Another SecurityMonitor instance is already running - exiting."
+            try { $script:AppMutex.ReleaseMutex() } catch {}
+            $script:AppMutex.Dispose()
+            $script:AppMutex = $null
+            return
+        }
+        Write-Ok "Instance mutex acquired"
+    } catch {
+        Write-Warn "Could not create mutex: $($_.Exception.Message)"
+    }
+
+    # Initialize system tray icon FIRST - must happen before Application.Run()
     Initialize-TrayIcon
     Write-Ok "System tray icon initialized (click notifications for details)"
 
@@ -2756,7 +2768,7 @@ function Start-Monitoring {
         $initTimer.Dispose()
 
         try {
-            # Create baselines (heavy I/O — runs inside message loop now)
+            # Create baselines (heavy I/O - runs inside message loop now)
             $fwBaseline = $null
             if (Test-Path $FirmwareBaseline) {
                 Write-Ok "Existing firmware baseline loaded"
@@ -2870,6 +2882,20 @@ function Start-Monitoring {
     })
     $initTimer.Start()
 
+    # ── Signal file watcher: Launcher.ps1 drops a file to ask us to open the dashboard ──
+    $script:SignalTimer = New-Object System.Windows.Forms.Timer
+    $script:SignalTimer.Interval = 1000
+    $script:SignalTimer.Add_Tick({
+        try {
+            $sigFile = Join-Path $env:TEMP "SecurityMonitor_OpenDashboard.signal"
+            if (Test-Path $sigFile) {
+                Remove-Item $sigFile -Force -ErrorAction SilentlyContinue
+                try { Show-Dashboard } catch {}
+            }
+        } catch {}
+    })
+    $script:SignalTimer.Start()
+
     # Run the Windows Forms message loop (keeps UI responsive)
     [System.Windows.Forms.Application]::Run()
 }
@@ -2891,9 +2917,15 @@ try {
         try { $script:DashboardForm.Dispose() } catch {}
     }
     # Clean up timers
+    if ($script:SignalTimer) { try { $script:SignalTimer.Stop(); $script:SignalTimer.Dispose() } catch {} }
     if ($script:MonitorTimer) { try { $script:MonitorTimer.Stop(); $script:MonitorTimer.Dispose() } catch {} }
     if ($script:PulseTimer) { try { $script:PulseTimer.Stop(); $script:PulseTimer.Dispose() } catch {} }
     if ($script:DashTimer) { try { $script:DashTimer.Stop(); $script:DashTimer.Dispose() } catch {} }
+    # Release instance mutex
+    if ($script:AppMutex) {
+        try { $script:AppMutex.ReleaseMutex() } catch {}
+        try { $script:AppMutex.Dispose() } catch {}
+    }
     Write-Log "=== MONITORING STOPPED === Total alerts: $script:AlertCount" -Level "INFO"
     Write-Host "`nMonitoring stopped. Total alerts: $script:AlertCount" -ForegroundColor Yellow
     Write-Host "Log files: $LogDir" -ForegroundColor Cyan
