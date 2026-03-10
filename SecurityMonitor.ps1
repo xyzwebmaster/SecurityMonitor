@@ -298,6 +298,368 @@ function Write-Log {
 $script:AlertHistory = [System.Collections.ArrayList]@()
 $script:DashboardForm = $null
 
+# --- AI THREAT DETECTION DATA ---
+$script:AiThreatHistory = [System.Collections.ArrayList]@()
+$script:AiThreatCount = 0
+$script:AiScanRunning = $false
+$script:AiLastScanTime = $null
+$script:HollowsHunterPath = Join-Path $PSScriptRoot "Tools\hollows_hunter.exe"
+$script:AiToolsDir = Join-Path $PSScriptRoot "Tools"
+
+# ============================================================================
+#  AI THREAT DETECTION ENGINE (fully local - no cloud)
+#  Uses: HollowsHunter (memory injection scanner) + PowerShell behavioral heuristics
+# ============================================================================
+
+function Add-AiThreat {
+    param([string]$Engine, [string]$Risk, [string]$ProcessName, [string]$Finding, [hashtable]$Details = @{})
+    $threat = @{
+        Timestamp   = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        Engine      = $Engine
+        Risk        = $Risk
+        ProcessName = $ProcessName
+        Finding     = $Finding
+        Details     = $Details
+    }
+    [void]$script:AiThreatHistory.Add($threat)
+    $script:AiThreatCount++
+
+    # Update ListView if available
+    try {
+        if ($script:AiThreatListView -and -not $script:AiThreatListView.IsDisposed) {
+            $riskColor = switch ($Risk) {
+                "CRIT" { [System.Drawing.Color]::FromArgb(255, 80, 90) }
+                "HIGH" { [System.Drawing.Color]::FromArgb(255, 170, 80) }
+                "MED"  { [System.Drawing.Color]::FromArgb(120, 190, 255) }
+                default { [System.Drawing.Color]::FromArgb(140, 140, 160) }
+            }
+            $item = New-Object System.Windows.Forms.ListViewItem($threat.Timestamp)
+            [void]$item.SubItems.Add($Risk)
+            [void]$item.SubItems.Add($Engine)
+            [void]$item.SubItems.Add($ProcessName)
+            [void]$item.SubItems.Add($Finding)
+            $item.Tag = $script:AiThreatHistory.Count - 1
+            $item.ForeColor = $riskColor
+            $script:AiThreatListView.Items.Insert(0, $item)
+        }
+    } catch {}
+}
+
+function Start-AiThreatScan {
+    if ($script:AiScanRunning) { return }
+    $script:AiScanRunning = $true
+
+    try {
+        if ($script:AiScanStatusLabel) { $script:AiScanStatusLabel.Text = "Scanning..." }
+        if ($script:AiStatusLabel) { $script:AiStatusLabel.Text = "Scan in progress..." }
+        if ($script:AiScanBtn) { $script:AiScanBtn.Enabled = $false }
+    } catch {}
+
+    $scanJob = {
+        $findings = [System.Collections.ArrayList]@()
+        $toolsDir = $script:AiToolsDir
+        $hhPath = $script:HollowsHunterPath
+
+        # ── ENGINE 1: HollowsHunter (memory injection scanner) ──
+        $hhAvailable = Test-Path $hhPath
+        if ($hhAvailable) {
+            try {
+                $outDir = Join-Path $env:TEMP "hh_scan_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+                $hhArgs = "/json /quiet /dir `"$outDir`""
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName = $hhPath
+                $psi.Arguments = $hhArgs
+                $psi.UseShellExecute = $false
+                $psi.RedirectStandardOutput = $true
+                $psi.RedirectStandardError = $true
+                $psi.CreateNoWindow = $true
+                $proc = [System.Diagnostics.Process]::Start($psi)
+                $proc.WaitForExit(120000) # 2 min timeout
+                if (-not $proc.HasExited) { try { $proc.Kill() } catch {} }
+
+                # Parse results
+                $scanJson = Join-Path $outDir "scan_report.json"
+                if (Test-Path $scanJson) {
+                    $report = Get-Content $scanJson -Raw | ConvertFrom-Json
+                    if ($report.scanned) {
+                        foreach ($s in $report.scanned) {
+                            if ($s.is_managed -or $s.replaced -or $s.hdr_mod -or $s.iat_hooked -or $s.implanted -or $s.unreachable_file -or $s.patched) {
+                                $suspTypes = @()
+                                if ($s.replaced)         { $suspTypes += "Replaced/Hollowed" }
+                                if ($s.hdr_mod)          { $suspTypes += "Header Modified" }
+                                if ($s.iat_hooked)       { $suspTypes += "IAT Hooked" }
+                                if ($s.implanted)        { $suspTypes += "Code Implanted" }
+                                if ($s.patched)          { $suspTypes += "Memory Patched" }
+                                if ($s.unreachable_file) { $suspTypes += "Unreachable File" }
+                                $risk = if ($s.replaced -or $s.implanted) { "CRIT" } elseif ($s.iat_hooked -or $s.hdr_mod) { "HIGH" } else { "MED" }
+                                $pName = try { (Get-Process -Id $s.pid -ErrorAction SilentlyContinue).ProcessName } catch { "PID:$($s.pid)" }
+                                if (-not $pName) { $pName = "PID:$($s.pid)" }
+                                [void]$findings.Add(@{
+                                    Engine = "HollowsHunter"
+                                    Risk = $risk
+                                    Process = $pName
+                                    Finding = "Memory anomaly: $($suspTypes -join ', ')"
+                                    Details = [ordered]@{
+                                        "PID" = "$($s.pid)"
+                                        "Process" = $pName
+                                        "Detection" = ($suspTypes -join ", ")
+                                        "Scanned Modules" = "$($s.scanned)"
+                                        "Suspicious Modules" = "$($s.suspicious)"
+                                        "Analysis" = "Process memory differs from disk image - possible injection or tampering"
+                                    }
+                                })
+                            }
+                        }
+                    }
+                }
+                # Cleanup
+                try { Remove-Item $outDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+            } catch {}
+        }
+
+        # ── ENGINE 2: Behavioral Heuristics (pure PowerShell) ──
+
+        # 2a. Suspicious parent-child relationships
+        try {
+            $procs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object { $_.ProcessId -ne 0 -and $_.ProcessId -ne 4 } |
+                Select-Object ProcessId, Name, ParentProcessId, CommandLine, ExecutablePath
+            $procMap = @{}
+            foreach ($p in $procs) { $procMap[$p.ProcessId] = $p }
+
+            $suspParentChild = @(
+                @{ Parent = "winword.exe";   Children = @("cmd.exe","powershell.exe","pwsh.exe","wscript.exe","cscript.exe","mshta.exe") },
+                @{ Parent = "excel.exe";     Children = @("cmd.exe","powershell.exe","pwsh.exe","wscript.exe","cscript.exe","mshta.exe") },
+                @{ Parent = "outlook.exe";   Children = @("cmd.exe","powershell.exe","pwsh.exe","wscript.exe","cscript.exe") },
+                @{ Parent = "svchost.exe";   Children = @("cmd.exe","powershell.exe","pwsh.exe","whoami.exe","net.exe","net1.exe") },
+                @{ Parent = "explorer.exe";  Children = @("mshta.exe","regsvr32.exe","rundll32.exe") }
+            )
+
+            foreach ($p in $procs) {
+                $parentProc = $procMap[$p.ParentProcessId]
+                if (-not $parentProc) { continue }
+                foreach ($rule in $suspParentChild) {
+                    if ($parentProc.Name -eq $rule.Parent -and $p.Name -in $rule.Children) {
+                        [void]$findings.Add(@{
+                            Engine = "Behavior"
+                            Risk = "HIGH"
+                            Process = $p.Name
+                            Finding = "Suspicious process tree: $($parentProc.Name) spawned $($p.Name)"
+                            Details = [ordered]@{
+                                "Child Process" = "$($p.Name) (PID: $($p.ProcessId))"
+                                "Parent Process" = "$($parentProc.Name) (PID: $($parentProc.ProcessId))"
+                                "Command Line" = "$($p.CommandLine)"
+                                "Analysis" = "Office/system processes should not spawn scripting engines - common in malware droppers"
+                            }
+                        })
+                    }
+                }
+            }
+        } catch {}
+
+        # 2b. Suspicious command-line patterns (encoded commands, download cradles)
+        try {
+            foreach ($p in $procs) {
+                if (-not $p.CommandLine) { continue }
+                $cmd = $p.CommandLine
+                $suspPatterns = @()
+                $analysis = ""
+
+                if ($cmd -match '-[Ee]nc\s|encodedcommand|FromBase64String|Convert.*Base64') {
+                    $suspPatterns += "Base64/Encoded command"
+                    $analysis = "Encoded commands are commonly used to obfuscate malicious payloads"
+                }
+                if ($cmd -match 'Invoke-Expression|IEX\s*\(|\.DownloadString\(|\.DownloadFile\(|Net\.WebClient|Invoke-WebRequest.*\|') {
+                    $suspPatterns += "Download cradle"
+                    $analysis = "Pattern matches common PowerShell download-and-execute techniques"
+                }
+                if ($cmd -match 'Add-MpPreference.*ExclusionPath|Set-MpPreference.*DisableRealtimeMonitoring') {
+                    $suspPatterns += "Defender evasion"
+                    $analysis = "Attempting to disable or bypass Windows Defender"
+                }
+                if ($cmd -match '-w\s+hidden|-WindowStyle\s+[Hh]idden' -and $p.Name -match 'powershell|pwsh') {
+                    # Only flag if also has other suspicious indicators
+                    if ($cmd -match 'bypass|unrestricted|Net\.|WebClient|Download|Invoke-') {
+                        $suspPatterns += "Hidden PowerShell with bypass"
+                        $analysis = "Hidden PowerShell with execution policy bypass and network activity"
+                    }
+                }
+                if ($cmd -match 'mimikatz|rubeus|sharphound|bloodhound|lazagne|procdump.*lsass|sekurlsa') {
+                    $suspPatterns += "Known attack tool"
+                    $analysis = "Command references known offensive security / credential theft tool"
+                }
+
+                if ($suspPatterns.Count -gt 0) {
+                    $truncCmd = if ($cmd.Length -gt 200) { $cmd.Substring(0, 200) + "..." } else { $cmd }
+                    [void]$findings.Add(@{
+                        Engine = "Behavior"
+                        Risk = if ($suspPatterns -contains "Known attack tool" -or $suspPatterns -contains "Defender evasion") { "CRIT" } else { "HIGH" }
+                        Process = $p.Name
+                        Finding = "Suspicious command: $($suspPatterns -join ', ')"
+                        Details = [ordered]@{
+                            "Process" = "$($p.Name) (PID: $($p.ProcessId))"
+                            "Pattern" = ($suspPatterns -join ", ")
+                            "Command Line" = $truncCmd
+                            "Path" = "$($p.ExecutablePath)"
+                            "Analysis" = $analysis
+                        }
+                    })
+                }
+            }
+        } catch {}
+
+        # 2c. Unsigned executables in suspicious locations
+        try {
+            foreach ($p in $procs) {
+                if (-not $p.ExecutablePath) { continue }
+                $exePath = $p.ExecutablePath
+                $suspLoc = $exePath -match '\\Temp\\|\\AppData\\Local\\Temp\\|\\Downloads\\|\\ProgramData\\[^\\]+\.exe$|\\Users\\Public\\'
+                if (-not $suspLoc) { continue }
+
+                try {
+                    $sig = Get-AuthenticodeSignature $exePath -ErrorAction SilentlyContinue
+                    if ($sig.Status -ne "Valid") {
+                        [void]$findings.Add(@{
+                            Engine = "Behavior"
+                            Risk = "MED"
+                            Process = $p.Name
+                            Finding = "Unsigned executable in suspicious location"
+                            Details = [ordered]@{
+                                "Process" = "$($p.Name) (PID: $($p.ProcessId))"
+                                "Path" = $exePath
+                                "Signature" = "$($sig.Status)"
+                                "Analysis" = "Unsigned executables running from temp/download folders may indicate malware"
+                            }
+                        })
+                    }
+                } catch {}
+            }
+        } catch {}
+
+        # 2d. High-entropy executable names (randomized names)
+        try {
+            foreach ($p in $procs) {
+                if (-not $p.Name) { continue }
+                $name = [System.IO.Path]::GetFileNameWithoutExtension($p.Name)
+                if ($name.Length -lt 6) { continue }
+                # Check if name looks random (high consonant ratio, no dictionary pattern)
+                $consonants = ($name.ToLower().ToCharArray() | Where-Object { $_ -match '[bcdfghjklmnpqrstvwxyz]' }).Count
+                $ratio = $consonants / $name.Length
+                $hasDigitMix = $name -match '[a-zA-Z].*\d.*[a-zA-Z]|\d.*[a-zA-Z].*\d'
+                if (($ratio -gt 0.75 -and $name.Length -gt 7) -or ($hasDigitMix -and $name.Length -gt 10 -and $ratio -gt 0.5)) {
+                    # Exclude known legitimate patterns
+                    if ($name -match '^(svchost|csrss|conhost|dllhost|taskhostw?|sihost|RuntimeBroker|SearchHost|SecurityHealth|msedgewebview|WindowsTerminal)') { continue }
+                    if ($p.ExecutablePath -and $p.ExecutablePath -match '\\(Windows|Program Files|Microsoft)\\') { continue }
+                    [void]$findings.Add(@{
+                        Engine = "Heuristic"
+                        Risk = "MED"
+                        Process = $p.Name
+                        Finding = "Process name appears randomized (possible malware)"
+                        Details = [ordered]@{
+                            "Process" = "$($p.Name) (PID: $($p.ProcessId))"
+                            "Path" = "$($p.ExecutablePath)"
+                            "Name Entropy" = "Consonant ratio: $([math]::Round($ratio, 2)), Length: $($name.Length)"
+                            "Analysis" = "Malware often uses random-looking process names to avoid detection"
+                        }
+                    })
+                }
+            }
+        } catch {}
+
+        # 2e. Processes with no executable on disk (deleted/memory-only)
+        try {
+            foreach ($p in $procs) {
+                if (-not $p.ExecutablePath) { continue }
+                if (-not (Test-Path $p.ExecutablePath)) {
+                    [void]$findings.Add(@{
+                        Engine = "Heuristic"
+                        Risk = "HIGH"
+                        Process = $p.Name
+                        Finding = "Running process has no file on disk (fileless/deleted)"
+                        Details = [ordered]@{
+                            "Process" = "$($p.Name) (PID: $($p.ProcessId))"
+                            "Expected Path" = "$($p.ExecutablePath)"
+                            "Analysis" = "Executable was deleted after launch or running from memory only - strong indicator of malware"
+                        }
+                    })
+                }
+            }
+        } catch {}
+
+        # 2f. Masquerading detection (system process names from wrong locations)
+        try {
+            $sysProcs = @{
+                "svchost.exe"  = "C:\Windows\System32\svchost.exe"
+                "csrss.exe"    = "C:\Windows\System32\csrss.exe"
+                "lsass.exe"    = "C:\Windows\System32\lsass.exe"
+                "services.exe" = "C:\Windows\System32\services.exe"
+                "smss.exe"     = "C:\Windows\System32\smss.exe"
+                "wininit.exe"  = "C:\Windows\System32\wininit.exe"
+                "winlogon.exe" = "C:\Windows\System32\winlogon.exe"
+                "explorer.exe" = "C:\Windows\explorer.exe"
+            }
+            foreach ($p in $procs) {
+                if ($sysProcs.ContainsKey($p.Name.ToLower()) -and $p.ExecutablePath) {
+                    $expected = $sysProcs[$p.Name.ToLower()]
+                    if ($p.ExecutablePath -ne $expected -and $p.ExecutablePath -ne $expected.Replace("System32","SysWOW64")) {
+                        [void]$findings.Add(@{
+                            Engine = "Heuristic"
+                            Risk = "CRIT"
+                            Process = $p.Name
+                            Finding = "Process masquerading: $($p.Name) running from wrong location"
+                            Details = [ordered]@{
+                                "Process" = "$($p.Name) (PID: $($p.ProcessId))"
+                                "Actual Path" = "$($p.ExecutablePath)"
+                                "Expected Path" = $expected
+                                "Analysis" = "System process running from non-standard location is a strong indicator of malware masquerading"
+                            }
+                        })
+                    }
+                }
+            }
+        } catch {}
+
+        return $findings
+    }
+
+    # Run scan in current thread (UI will be briefly unresponsive but simpler for admin tool)
+    try {
+        $results = & $scanJob
+
+        $hhAvail = Test-Path $script:HollowsHunterPath
+        foreach ($f in $results) {
+            Add-AiThreat -Engine $f.Engine -Risk $f.Risk -ProcessName $f.Process -Finding $f.Finding -Details $f.Details
+        }
+
+        $script:AiLastScanTime = Get-Date
+        $statusText = "Last scan: $(Get-Date -Format 'HH:mm:ss') | Engines: Behavioral Analysis"
+        if ($hhAvail) { $statusText += " + HollowsHunter" }
+        $statusText += " | Findings: $($results.Count)"
+
+        if ($script:AiScanStatusLabel) { $script:AiScanStatusLabel.Text = $statusText }
+        if ($script:AiStatusLabel) { $script:AiStatusLabel.Text = $statusText }
+
+        $cntText = "$($script:AiThreatCount) threat(s) detected"
+        if ($script:AiThreatCount -eq 0) {
+            $cntText = "No threats detected"
+            if ($script:AiCountLabel) { $script:AiCountLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 100) }
+        } else {
+            if ($script:AiCountLabel) { $script:AiCountLabel.ForeColor = [System.Drawing.Color]::FromArgb(255, 80, 90) }
+        }
+        if ($script:AiCountLabel) { $script:AiCountLabel.Text = $cntText }
+
+        if (-not $hhAvail -and $script:AiScanStatusLabel) {
+            $script:AiScanStatusLabel.Text += "  [HollowsHunter not found - place hollows_hunter.exe in Tools\ for memory scanning]"
+        }
+    } catch {}
+
+    $script:AiScanRunning = $false
+    try {
+        if ($script:AiScanBtn) { $script:AiScanBtn.Enabled = $true }
+    } catch {}
+}
+
 # ============================================================================
 #  UNIFIED DASHBOARD GUI - All features in one modern tabbed window
 # ============================================================================
@@ -433,7 +795,7 @@ function Show-Dashboard {
     $pages = $script:Pages
     $contentW = $contentPanel.Width
     $contentH = $contentPanel.Height
-    foreach ($pageName in @("Status", "Alerts", "Settings", "Logs")) {
+    foreach ($pageName in @("Status", "Alerts", "AI Threats", "Settings", "Logs")) {
         $p = New-Object System.Windows.Forms.Panel
         $p.Location = New-Object System.Drawing.Point(0, 0)
         $p.Size = New-Object System.Drawing.Size($contentW, $contentH)
@@ -448,10 +810,11 @@ function Show-Dashboard {
     # Sidebar nav buttons
     $navButtons = @()
     $navItems = @(
-        @{ Name = "Status";   Icon = "[S]"; Text = "  Status" },
-        @{ Name = "Alerts";   Icon = "[A]"; Text = "  Alerts" },
-        @{ Name = "Settings"; Icon = "[C]"; Text = "  Settings" },
-        @{ Name = "Logs";     Icon = "[L]"; Text = "  Logs" }
+        @{ Name = "Status";     Icon = "[S]"; Text = "  Status" },
+        @{ Name = "Alerts";     Icon = "[A]"; Text = "  Alerts" },
+        @{ Name = "AI Threats"; Icon = "[AI]"; Text = " AI Threats" },
+        @{ Name = "Settings";   Icon = "[C]"; Text = "  Settings" },
+        @{ Name = "Logs";       Icon = "[L]"; Text = "  Logs" }
     )
     $navY = 105
     foreach ($nav in $navItems) {
@@ -870,6 +1233,71 @@ function Show-Dashboard {
     })
     $netPanel.Controls.Add($viewAllConns)
 
+    # ── AI Threat Detection Panel (Status Page) ──
+    $aiPanel = New-Object System.Windows.Forms.Panel
+    $aiPanel.Location = New-Object System.Drawing.Point(25, 385)
+    $aiPanel.Size = New-Object System.Drawing.Size(770, 65)
+    $aiPanel.BackColor = $colCard
+    $aiPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $statusPage.Controls.Add($aiPanel)
+
+    $aiIcon = New-Object System.Windows.Forms.Label
+    $aiIcon.Text = "$([char]0x2699)"
+    $aiIcon.Location = New-Object System.Drawing.Point(12, 8)
+    $aiIcon.Size = New-Object System.Drawing.Size(32, 32)
+    $aiIcon.Font = New-Object System.Drawing.Font("Segoe UI Symbol", 16)
+    $aiIcon.ForeColor = [System.Drawing.Color]::FromArgb(180, 120, 255)
+    $aiPanel.Controls.Add($aiIcon)
+
+    $aiTitle = New-Object System.Windows.Forms.Label
+    $aiTitle.Text = "AI Threat Detection"
+    $aiTitle.Location = New-Object System.Drawing.Point(48, 6)
+    $aiTitle.Size = New-Object System.Drawing.Size(200, 20)
+    $aiTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
+    $aiTitle.ForeColor = [System.Drawing.Color]::FromArgb(180, 120, 255)
+    $aiPanel.Controls.Add($aiTitle)
+
+    $script:AiStatusLabel = New-Object System.Windows.Forms.Label
+    $script:AiStatusLabel.Text = "Initializing..."
+    $script:AiStatusLabel.Location = New-Object System.Drawing.Point(48, 28)
+    $script:AiStatusLabel.Size = New-Object System.Drawing.Size(500, 16)
+    $script:AiStatusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+    $script:AiStatusLabel.ForeColor = $colTextDim
+    $aiPanel.Controls.Add($script:AiStatusLabel)
+
+    $script:AiCountLabel = New-Object System.Windows.Forms.Label
+    $script:AiCountLabel.Text = "0"
+    $script:AiCountLabel.Location = New-Object System.Drawing.Point(48, 44)
+    $script:AiCountLabel.Size = New-Object System.Drawing.Size(300, 16)
+    $script:AiCountLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
+    $script:AiCountLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 100)
+    $aiPanel.Controls.Add($script:AiCountLabel)
+
+    $aiViewLink = New-Object System.Windows.Forms.LinkLabel
+    $aiViewLink.Text = "View Details >>"
+    $aiViewLink.Location = New-Object System.Drawing.Point(640, 8)
+    $aiViewLink.Size = New-Object System.Drawing.Size(120, 18)
+    $aiViewLink.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $aiViewLink.LinkColor = [System.Drawing.Color]::FromArgb(180, 120, 255)
+    $aiViewLink.ActiveLinkColor = [System.Drawing.Color]::White
+    $aiViewLink.VisitedLinkColor = [System.Drawing.Color]::FromArgb(180, 120, 255)
+    $aiViewLink.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+    $aiViewLink.Add_LinkClicked({ try { & $script:SwitchPageFn "AI Threats" } catch {} })
+    $aiPanel.Controls.Add($aiViewLink)
+
+    $script:AiScanBtn = New-Object System.Windows.Forms.Button
+    $script:AiScanBtn.Text = "Scan Now"
+    $script:AiScanBtn.Location = New-Object System.Drawing.Point(640, 32)
+    $script:AiScanBtn.Size = New-Object System.Drawing.Size(120, 26)
+    $script:AiScanBtn.FlatStyle = "Flat"
+    $script:AiScanBtn.BackColor = [System.Drawing.Color]::FromArgb(100, 60, 180)
+    $script:AiScanBtn.ForeColor = [System.Drawing.Color]::White
+    $script:AiScanBtn.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
+    $script:AiScanBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $script:AiScanBtn.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+    $script:AiScanBtn.Add_Click({ try { Start-AiThreatScan } catch {} })
+    $aiPanel.Controls.Add($script:AiScanBtn)
+
     # ── Modern ListView styling helper ──
     # Applies dark OwnerDraw theme with custom header, row highlights, no grid lines
     $script:ColCard = $colCard
@@ -1013,7 +1441,7 @@ function Show-Dashboard {
     # ── System Health Gauges ──
     $healthLabel = New-Object System.Windows.Forms.Label
     $healthLabel.Text = "System Health"
-    $healthLabel.Location = New-Object System.Drawing.Point(25, 390)
+    $healthLabel.Location = New-Object System.Drawing.Point(25, 462)
     $healthLabel.Size = New-Object System.Drawing.Size(200, 22)
     $healthLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
     $healthLabel.ForeColor = $colAccent
@@ -1064,14 +1492,14 @@ function Show-Dashboard {
         return @{ Fill = $barFill; Label = $gv }
     }
 
-    $script:CpuGauge  = New-GaugeBar $statusPage 25  415 "CPU"  "cpuBar"
-    $script:RamGauge  = New-GaugeBar $statusPage 275 415 "RAM"  "ramBar"
-    $script:DiskGauge = New-GaugeBar $statusPage 525 415 "DISK" "diskBar"
+    $script:CpuGauge  = New-GaugeBar $statusPage 25  487 "CPU"  "cpuBar"
+    $script:RamGauge  = New-GaugeBar $statusPage 275 487 "RAM"  "ramBar"
+    $script:DiskGauge = New-GaugeBar $statusPage 525 487 "DISK" "diskBar"
 
     # Recent alerts preview on status page (Enhancement 4: "View All >>" link)
     $recentLabel = New-Object System.Windows.Forms.Label
     $recentLabel.Text = "Recent Alerts"
-    $recentLabel.Location = New-Object System.Drawing.Point(25, 470)
+    $recentLabel.Location = New-Object System.Drawing.Point(25, 542)
     $recentLabel.Size = New-Object System.Drawing.Size(300, 24)
     $recentLabel.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
     $recentLabel.ForeColor = $colOrange
@@ -1080,7 +1508,7 @@ function Show-Dashboard {
     # "View All >>" link next to Recent Alerts title
     $viewAllLink = New-Object System.Windows.Forms.LinkLabel
     $viewAllLink.Text = "View All >>"
-    $viewAllLink.Location = New-Object System.Drawing.Point(700, 474)
+    $viewAllLink.Location = New-Object System.Drawing.Point(700, 546)
     $viewAllLink.Size = New-Object System.Drawing.Size(90, 18)
     $viewAllLink.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
     $viewAllLink.LinkColor = $colAccent
@@ -1093,7 +1521,7 @@ function Show-Dashboard {
     $script:RecentList = New-Object System.Windows.Forms.ListView
     $recentList = $script:RecentList
     $recentList.Name = "recentList"
-    $recentList.Location = New-Object System.Drawing.Point(25, 498)
+    $recentList.Location = New-Object System.Drawing.Point(25, 570)
     $recentList.Size = New-Object System.Drawing.Size(770, 170)
     $recentList.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
     Style-ListView $recentList
@@ -2102,6 +2530,174 @@ try {
   } catch { Write-Host "[!] Alerts page error: $_" -ForegroundColor Red }
 
     # ═══════════════════════════════════════════════════════════════
+    #  PAGE 2.5: AI THREATS (behavioral + memory analysis)
+    # ═══════════════════════════════════════════════════════════════
+  try {
+    $aiPage = $pages["AI Threats"]
+
+    $aiPageTitle = New-Object System.Windows.Forms.Label
+    $aiPageTitle.Text = "AI Threat Detection"
+    $aiPageTitle.Location = New-Object System.Drawing.Point(25, 18)
+    $aiPageTitle.Size = New-Object System.Drawing.Size(400, 32)
+    $aiPageTitle.Font = New-Object System.Drawing.Font("Segoe UI", 15, [System.Drawing.FontStyle]::Bold)
+    $aiPageTitle.ForeColor = [System.Drawing.Color]::FromArgb(180, 120, 255)
+    $aiPage.Controls.Add($aiPageTitle)
+
+    $aiPageDesc = New-Object System.Windows.Forms.Label
+    $aiPageDesc.Text = "Local behavioral analysis, memory injection scanning, and process anomaly detection"
+    $aiPageDesc.Location = New-Object System.Drawing.Point(25, 52)
+    $aiPageDesc.Size = New-Object System.Drawing.Size(700, 20)
+    $aiPageDesc.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $aiPageDesc.ForeColor = $colTextDim
+    $aiPageDesc.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $aiPage.Controls.Add($aiPageDesc)
+
+    # Scan controls panel
+    $aiControlPanel = New-Object System.Windows.Forms.Panel
+    $aiControlPanel.Location = New-Object System.Drawing.Point(25, 78)
+    $aiControlPanel.Size = New-Object System.Drawing.Size(770, 42)
+    $aiControlPanel.BackColor = $colCard
+    $aiControlPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $aiPage.Controls.Add($aiControlPanel)
+
+    $script:AiScanStatusLabel = New-Object System.Windows.Forms.Label
+    $script:AiScanStatusLabel.Text = "Ready to scan"
+    $script:AiScanStatusLabel.Location = New-Object System.Drawing.Point(15, 11)
+    $script:AiScanStatusLabel.Size = New-Object System.Drawing.Size(400, 20)
+    $script:AiScanStatusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $script:AiScanStatusLabel.ForeColor = $colTextDim
+    $aiControlPanel.Controls.Add($script:AiScanStatusLabel)
+
+    $aiPageScanBtn = New-Object System.Windows.Forms.Button
+    $aiPageScanBtn.Text = "Run Full Scan"
+    $aiPageScanBtn.Location = New-Object System.Drawing.Point(550, 6)
+    $aiPageScanBtn.Size = New-Object System.Drawing.Size(100, 30)
+    $aiPageScanBtn.FlatStyle = "Flat"
+    $aiPageScanBtn.BackColor = [System.Drawing.Color]::FromArgb(100, 60, 180)
+    $aiPageScanBtn.ForeColor = [System.Drawing.Color]::White
+    $aiPageScanBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $aiPageScanBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $aiPageScanBtn.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+    $aiPageScanBtn.Add_Click({ try { Start-AiThreatScan } catch {} })
+    $aiControlPanel.Controls.Add($aiPageScanBtn)
+
+    $aiClearBtn = New-Object System.Windows.Forms.Button
+    $aiClearBtn.Text = "Clear"
+    $aiClearBtn.Location = New-Object System.Drawing.Point(660, 6)
+    $aiClearBtn.Size = New-Object System.Drawing.Size(100, 30)
+    $aiClearBtn.FlatStyle = "Flat"
+    $aiClearBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
+    $aiClearBtn.ForeColor = $colTextMain
+    $aiClearBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $aiClearBtn.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+    $aiClearBtn.Add_Click({
+        try {
+            $script:AiThreatHistory.Clear()
+            $script:AiThreatCount = 0
+            $script:AiThreatListView.Items.Clear()
+            $script:AiThreatDetailContent.Controls.Clear()
+            $script:AiThreatDetailTitle.Text = "Select a finding to view details"
+            $script:AiThreatDetailTitle.ForeColor = $script:ColTextDim
+        } catch {}
+    })
+    $aiControlPanel.Controls.Add($aiClearBtn)
+
+    # AI Threat ListView
+    $script:AiThreatListView = New-Object System.Windows.Forms.ListView
+    $aiThreatLv = $script:AiThreatListView
+    $aiThreatLv.Name = "aiThreatListView"
+    $aiThreatLv.Location = New-Object System.Drawing.Point(25, 128)
+    $aiThreatLv.Size = New-Object System.Drawing.Size(770, 260)
+    $aiThreatLv.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
+    Style-ListView $aiThreatLv
+    [void]$aiThreatLv.Columns.Add("Time", 110)
+    [void]$aiThreatLv.Columns.Add("Risk", 55)
+    [void]$aiThreatLv.Columns.Add("Engine", 95)
+    [void]$aiThreatLv.Columns.Add("Process", 140)
+    [void]$aiThreatLv.Columns.Add("Finding", 350)
+    $aiThreatLv.Add_Resize({
+        try {
+            $w = $this.ClientSize.Width - 2
+            if ($w -lt 200) { return }
+            $this.Columns[0].Width = [Math]::Max(40, [int]($w * 0.14))
+            $this.Columns[1].Width = [Math]::Max(40, [int]($w * 0.07))
+            $this.Columns[2].Width = [Math]::Max(40, [int]($w * 0.12))
+            $this.Columns[3].Width = [Math]::Max(40, [int]($w * 0.19))
+            $this.Columns[4].Width = [Math]::Max(40, [int]($w * 0.48))
+        } catch {}
+    })
+    $aiPage.Controls.Add($aiThreatLv)
+
+    # AI Threat Detail Panel
+    $aiDetailBox = New-Object System.Windows.Forms.Panel
+    $aiDetailBox.Location = New-Object System.Drawing.Point(25, 398)
+    $aiDetailBox.Size = New-Object System.Drawing.Size(770, 200)
+    $aiDetailBox.BackColor = $colCard
+    $aiDetailBox.AutoScroll = $true
+    $aiDetailBox.Anchor = [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
+    $aiPage.Controls.Add($aiDetailBox)
+
+    $script:AiThreatDetailTitle = New-Object System.Windows.Forms.Label
+    $script:AiThreatDetailTitle.Text = "Select a finding to view details"
+    $script:AiThreatDetailTitle.Location = New-Object System.Drawing.Point(15, 10)
+    $script:AiThreatDetailTitle.Size = New-Object System.Drawing.Size(550, 26)
+    $script:AiThreatDetailTitle.Font = New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)
+    $script:AiThreatDetailTitle.ForeColor = $colTextDim
+    $aiDetailBox.Controls.Add($script:AiThreatDetailTitle)
+
+    $script:AiThreatDetailContent = New-Object System.Windows.Forms.Panel
+    $script:AiThreatDetailContent.Location = New-Object System.Drawing.Point(15, 40)
+    $script:AiThreatDetailContent.Size = New-Object System.Drawing.Size(730, 140)
+    $script:AiThreatDetailContent.BackColor = $colCard
+    $script:AiThreatDetailContent.AutoScroll = $true
+    $script:AiThreatDetailContent.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $aiDetailBox.Controls.Add($script:AiThreatDetailContent)
+
+    # Selection handler
+    $aiThreatLv.Add_SelectedIndexChanged({
+        try {
+            $sel = $this.SelectedItems
+            if ($sel.Count -eq 0) { return }
+            $idx = $sel[0].Tag
+            if ($idx -ge $script:AiThreatHistory.Count) { return }
+            $td = $script:AiThreatHistory[$idx]
+
+            $script:AiThreatDetailTitle.Text = $td.Finding
+            $riskColor = switch ($td.Risk) {
+                "CRIT" { [System.Drawing.Color]::FromArgb(255, 60, 60) }
+                "HIGH" { [System.Drawing.Color]::FromArgb(255, 170, 80) }
+                "MED"  { [System.Drawing.Color]::FromArgb(120, 190, 255) }
+                default { [System.Drawing.Color]::FromArgb(140, 140, 160) }
+            }
+            $script:AiThreatDetailTitle.ForeColor = $riskColor
+
+            $script:AiThreatDetailContent.Controls.Clear()
+            $dy = 0
+            foreach ($key in $td.Details.Keys) {
+                $kl = New-Object System.Windows.Forms.Label
+                $kl.Text = "${key}:"
+                $kl.Location = New-Object System.Drawing.Point(0, $dy)
+                $kl.Size = New-Object System.Drawing.Size(130, 20)
+                $kl.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+                $kl.ForeColor = $script:ColAccent
+                $script:AiThreatDetailContent.Controls.Add($kl)
+
+                $vl = New-Object System.Windows.Forms.Label
+                $vl.Text = "$($td.Details[$key])"
+                $vl.Location = New-Object System.Drawing.Point(135, $dy)
+                $vl.Size = New-Object System.Drawing.Size(580, 20)
+                $vl.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+                $vl.ForeColor = $script:ColTextMain
+                $vl.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+                $script:AiThreatDetailContent.Controls.Add($vl)
+                $dy += 22
+            }
+        } catch {}
+    })
+
+  } catch { Write-Host "[!] AI Threats page error: $_" -ForegroundColor Red }
+
+    # ═══════════════════════════════════════════════════════════════
     #  PAGE 3: SETTINGS (notification preferences - live edit)
     # ═══════════════════════════════════════════════════════════════
   try {
@@ -2651,9 +3247,41 @@ try {
             try {
                 $script:NetActivityLabel.Text = "Active: $($script:DashCache.NetConns) connections   Top: $($script:DashCache.NetTopStr)"
             } catch {}
+
+            # AI threat count update
+            try {
+                if ($script:AiCountLabel) {
+                    $cnt = $script:AiThreatCount
+                    if ($cnt -eq 0) {
+                        $script:AiCountLabel.Text = "No threats detected"
+                        $script:AiCountLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 100)
+                    } else {
+                        $script:AiCountLabel.Text = "$cnt threat(s) detected"
+                        $script:AiCountLabel.ForeColor = [System.Drawing.Color]::FromArgb(255, 80, 90)
+                    }
+                }
+            } catch {}
         } catch {}
     })
     $script:DashTimer.Start()
+
+    # Run initial AI scan after a short delay
+    $script:AiInitTimer = New-Object System.Windows.Forms.Timer
+    $script:AiInitTimer.Interval = 5000
+    $script:AiInitTimer.Add_Tick({
+        $this.Stop()
+        $this.Dispose()
+        try { Start-AiThreatScan } catch {}
+    })
+    $script:AiInitTimer.Start()
+
+    # Periodic AI scan timer (every 5 minutes)
+    $script:AiPeriodicTimer = New-Object System.Windows.Forms.Timer
+    $script:AiPeriodicTimer.Interval = 300000
+    $script:AiPeriodicTimer.Add_Tick({
+        try { Start-AiThreatScan } catch {}
+    })
+    $script:AiPeriodicTimer.Start()
 
     # Set open tab and switch page
     $script:DashboardOpenTab = $OpenTab
