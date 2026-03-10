@@ -560,6 +560,111 @@ function Show-Dashboard {
         $infoBox.Controls.Add($iv)
     }
 
+    # ── Modern ListView styling helper ──
+    # Applies dark OwnerDraw theme with custom header, row highlights, no grid lines
+    $script:ColCard = $colCard
+    $script:ColBg = $colBg
+    $script:ColAccent = $colAccent
+    $script:ColTextMain = $colTextMain
+    $script:ColTextDim = $colTextDim
+
+    function Style-ListView {
+        param([System.Windows.Forms.ListView]$lv)
+        $lv.View = "Details"
+        $lv.FullRowSelect = $true
+        $lv.GridLines = $false
+        $lv.BorderStyle = "None"
+        $lv.BackColor = $colCard
+        $lv.ForeColor = $colTextMain
+        $lv.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $lv.OwnerDraw = $true
+        $lv.HeaderStyle = "Nonclickable"
+
+        # Draw column headers
+        $lv.Add_DrawColumnHeader({
+            param($s, $e)
+            $headerBg = [System.Drawing.Color]::FromArgb(22, 22, 36)
+            $headerFg = [System.Drawing.Color]::FromArgb(100, 160, 255)
+            $brush = New-Object System.Drawing.SolidBrush($headerBg)
+            $e.Graphics.FillRectangle($brush, $e.Bounds)
+            $brush.Dispose()
+            # Bottom accent line
+            $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(0, 100, 200), 2)
+            $e.Graphics.DrawLine($pen, $e.Bounds.Left, ($e.Bounds.Bottom - 1), $e.Bounds.Right, ($e.Bounds.Bottom - 1))
+            $pen.Dispose()
+            $textBrush = New-Object System.Drawing.SolidBrush($headerFg)
+            $headerFont = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
+            $rect = New-Object System.Drawing.RectangleF(($e.Bounds.X + 8), ($e.Bounds.Y + 4), $e.Bounds.Width, $e.Bounds.Height)
+            $e.Graphics.DrawString($e.Header.Text, $headerFont, $textBrush, $rect)
+            $headerFont.Dispose()
+            $textBrush.Dispose()
+        })
+
+        # Draw items (rows)
+        $lv.Add_DrawItem({
+            param($s, $e)
+            $e.DrawDefault = $false
+        })
+
+        # Draw sub-items (cells)
+        $lv.Add_DrawSubItem({
+            param($s, $e)
+            try {
+                $isSelected = ($e.ItemState -band [System.Windows.Forms.ListViewItemStates]::Selected)
+                $isEven = ($e.ItemIndex % 2 -eq 0)
+
+                # Background
+                if ($isSelected) {
+                    $bgColor = [System.Drawing.Color]::FromArgb(0, 80, 150)
+                } elseif ($isEven) {
+                    $bgColor = [System.Drawing.Color]::FromArgb(28, 28, 44)
+                } else {
+                    $bgColor = [System.Drawing.Color]::FromArgb(34, 34, 52)
+                }
+                $bgBrush = New-Object System.Drawing.SolidBrush($bgColor)
+                $e.Graphics.FillRectangle($bgBrush, $e.Bounds)
+                $bgBrush.Dispose()
+
+                # Text color
+                if ($isSelected) {
+                    $txtColor = [System.Drawing.Color]::White
+                } else {
+                    $txtColor = $e.Item.ForeColor
+                    # Dim the non-primary columns slightly
+                    if ($e.ColumnIndex -gt 0 -and -not $isSelected) {
+                        if ($e.ColumnIndex -eq 1) {
+                            # Category column - use item color but slightly brighter
+                            $txtColor = $e.Item.ForeColor
+                        } elseif ($e.ColumnIndex -ge 3) {
+                            $txtColor = [System.Drawing.Color]::FromArgb(170, 170, 190)
+                        }
+                    }
+                }
+                $txtBrush = New-Object System.Drawing.SolidBrush($txtColor)
+                $cellFont = $e.Item.Font
+                if ($e.ColumnIndex -eq 0) {
+                    $cellFont = New-Object System.Drawing.Font("Consolas", 8.5)
+                }
+                $textRect = New-Object System.Drawing.RectangleF(($e.Bounds.X + 8), ($e.Bounds.Y + 3), ($e.Bounds.Width - 10), $e.Bounds.Height)
+                $sf = New-Object System.Drawing.StringFormat
+                $sf.FormatFlags = [System.Drawing.StringFormatFlags]::NoWrap
+                $sf.Trimming = [System.Drawing.StringTrimming]::EllipsisCharacter
+                $text = if ($e.SubItem) { $e.SubItem.Text } else { "" }
+                $e.Graphics.DrawString($text, $cellFont, $txtBrush, $textRect, $sf)
+                $sf.Dispose()
+                $txtBrush.Dispose()
+                if ($e.ColumnIndex -eq 0) { $cellFont.Dispose() }
+
+                # Subtle separator line between rows
+                $sepPen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(40, 40, 60), 1)
+                $e.Graphics.DrawLine($sepPen, $e.Bounds.Left, ($e.Bounds.Bottom - 1), $e.Bounds.Right, ($e.Bounds.Bottom - 1))
+                $sepPen.Dispose()
+            } catch {
+                $e.DrawDefault = $true
+            }
+        })
+    }
+
     # Recent alerts preview on status page
     $recentLabel = New-Object System.Windows.Forms.Label
     $recentLabel.Text = "Recent Alerts"
@@ -575,16 +680,11 @@ function Show-Dashboard {
     $recentList.Location = New-Object System.Drawing.Point(25, 288)
     $recentList.Size = New-Object System.Drawing.Size(770, 300)
     $recentList.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
-    $recentList.View = "Details"
-    $recentList.FullRowSelect = $true
-    $recentList.GridLines = $true
-    $recentList.BackColor = $colCard
-    $recentList.ForeColor = $colTextMain
-    $recentList.Font = New-Object System.Drawing.Font("Consolas", 9)
+    Style-ListView $recentList
     [void]$recentList.Columns.Add("Time", 130)
-    [void]$recentList.Columns.Add("Category", 90)
-    [void]$recentList.Columns.Add("Title", 180)
-    [void]$recentList.Columns.Add("Message", 360)
+    [void]$recentList.Columns.Add("Category", 100)
+    [void]$recentList.Columns.Add("Title", 200)
+    [void]$recentList.Columns.Add("Message", 330)
     $recentList.Add_DoubleClick({
         try {
             $sel = $this.SelectedItems
@@ -628,16 +728,11 @@ function Show-Dashboard {
     $alertListView.Location = New-Object System.Drawing.Point(25, 58)
     $alertListView.Size = New-Object System.Drawing.Size(770, 290)
     $alertListView.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
-    $alertListView.View = "Details"
-    $alertListView.FullRowSelect = $true
-    $alertListView.GridLines = $true
-    $alertListView.BackColor = $colCard
-    $alertListView.ForeColor = $colTextMain
-    $alertListView.Font = New-Object System.Drawing.Font("Consolas", 9)
+    Style-ListView $alertListView
     [void]$alertListView.Columns.Add("Time", 130)
-    [void]$alertListView.Columns.Add("Category", 90)
-    [void]$alertListView.Columns.Add("Title", 180)
-    [void]$alertListView.Columns.Add("Message", 360)
+    [void]$alertListView.Columns.Add("Category", 100)
+    [void]$alertListView.Columns.Add("Title", 200)
+    [void]$alertListView.Columns.Add("Message", 330)
     $alertsPage.Controls.Add($alertListView)
 
     # Detail panel below the list
