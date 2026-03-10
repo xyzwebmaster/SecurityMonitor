@@ -1291,6 +1291,7 @@ function Show-Dashboard {
     $openLogBtn.FlatStyle = "Flat"
     $openLogBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
     $openLogBtn.ForeColor = $colTextMain
+    $openLogBtn.Visible = $false
     $openLogBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     $openLogBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
     $openLogBtn.Tag = $AlertFile
@@ -1601,6 +1602,7 @@ try {
             # Row 1: IpLookup / OpenLog / Regedit
             $script:IpLookupBtn.Location = New-Object System.Drawing.Point(15, $btnY)
             $script:OpenLogBtn.Location = New-Object System.Drawing.Point(310, $btnY)
+            $script:OpenLogBtn.Visible = $true
 
             # Bring all buttons to front so DetailContent can't cover them
             $script:IpLookupBtn.BringToFront()
