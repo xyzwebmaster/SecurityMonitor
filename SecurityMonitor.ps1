@@ -870,29 +870,40 @@ function Show-Dashboard {
 
                 # Background
                 if ($isSelected) {
-                    $bgColor = [System.Drawing.Color]::FromArgb(0, 80, 150)
+                    $bgColor = [System.Drawing.Color]::FromArgb(20, 60, 110)
                 } elseif ($isEven) {
-                    $bgColor = [System.Drawing.Color]::FromArgb(28, 28, 44)
+                    $bgColor = [System.Drawing.Color]::FromArgb(26, 26, 42)
                 } else {
-                    $bgColor = [System.Drawing.Color]::FromArgb(34, 34, 52)
+                    $bgColor = [System.Drawing.Color]::FromArgb(32, 32, 50)
                 }
                 $bgBrush = New-Object System.Drawing.SolidBrush($bgColor)
                 $e.Graphics.FillRectangle($bgBrush, $e.Bounds)
                 $bgBrush.Dispose()
 
+                # Severity accent bar on first column (3px left stripe)
+                if ($e.ColumnIndex -eq 0) {
+                    $accentColor = $e.Item.ForeColor
+                    $accentBrush = New-Object System.Drawing.SolidBrush($accentColor)
+                    $e.Graphics.FillRectangle($accentBrush, $e.Bounds.X, $e.Bounds.Y, 3, $e.Bounds.Height)
+                    $accentBrush.Dispose()
+                }
+
                 # Text color
                 if ($isSelected) {
                     $txtColor = [System.Drawing.Color]::White
                 } else {
-                    $txtColor = $e.Item.ForeColor
-                    # Dim the non-primary columns slightly
-                    if ($e.ColumnIndex -gt 0 -and -not $isSelected) {
-                        if ($e.ColumnIndex -eq 1) {
-                            # Category column - use item color but slightly brighter
-                            $txtColor = $e.Item.ForeColor
-                        } elseif ($e.ColumnIndex -ge 3) {
-                            $txtColor = [System.Drawing.Color]::FromArgb(170, 170, 190)
-                        }
+                    if ($e.ColumnIndex -eq 0) {
+                        # Time column - soft white
+                        $txtColor = [System.Drawing.Color]::FromArgb(180, 180, 200)
+                    } elseif ($e.ColumnIndex -eq 1) {
+                        # Category - accent colored
+                        $txtColor = $e.Item.ForeColor
+                    } elseif ($e.ColumnIndex -eq 2) {
+                        # Title - bright white
+                        $txtColor = [System.Drawing.Color]::FromArgb(240, 240, 250)
+                    } else {
+                        # Message - dimmed
+                        $txtColor = [System.Drawing.Color]::FromArgb(155, 155, 175)
                     }
                 }
                 $txtBrush = New-Object System.Drawing.SolidBrush($txtColor)
@@ -1008,10 +1019,9 @@ function Show-Dashboard {
     $recentList.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
     Style-ListView $recentList
     [void]$recentList.Columns.Add("Time", 120)
-    [void]$recentList.Columns.Add("Sev", 50)
-    [void]$recentList.Columns.Add("Category", 90)
-    [void]$recentList.Columns.Add("Title", 180)
-    [void]$recentList.Columns.Add("Message", 310)
+    [void]$recentList.Columns.Add("Category", 100)
+    [void]$recentList.Columns.Add("Title", 200)
+    [void]$recentList.Columns.Add("Message", 330)
     $recentList.Add_DoubleClick({
         try {
             $sel = $this.SelectedItems
@@ -1179,14 +1189,13 @@ function Show-Dashboard {
                     if (-not $match) { continue }
                 }
                 $itemColor = switch ($a.Severity) {
-                    "CRIT" { [System.Drawing.Color]::FromArgb(255, 60, 60) }
-                    "HIGH" { [System.Drawing.Color]::FromArgb(255, 160, 40) }
-                    "MED"  { [System.Drawing.Color]::FromArgb(255, 220, 50) }
-                    "LOW"  { [System.Drawing.Color]::White }
+                    "CRIT" { [System.Drawing.Color]::FromArgb(255, 80, 90) }
+                    "HIGH" { [System.Drawing.Color]::FromArgb(255, 170, 80) }
+                    "MED"  { [System.Drawing.Color]::FromArgb(120, 190, 255) }
+                    "LOW"  { [System.Drawing.Color]::FromArgb(160, 220, 180) }
                     default { [System.Drawing.Color]::FromArgb(140, 140, 160) }
                 }
                 $item = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
-                [void]$item.SubItems.Add($a.Severity)
                 [void]$item.SubItems.Add($a.Category)
                 [void]$item.SubItems.Add($a.Title)
                 [void]$item.SubItems.Add($a.Message)
@@ -1208,10 +1217,9 @@ function Show-Dashboard {
     $alertListView.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
     Style-ListView $alertListView
     [void]$alertListView.Columns.Add("Time", 120)
-    [void]$alertListView.Columns.Add("Sev", 50)
-    [void]$alertListView.Columns.Add("Category", 90)
-    [void]$alertListView.Columns.Add("Title", 180)
-    [void]$alertListView.Columns.Add("Message", 310)
+    [void]$alertListView.Columns.Add("Category", 100)
+    [void]$alertListView.Columns.Add("Title", 200)
+    [void]$alertListView.Columns.Add("Message", 330)
     $alertsPage.Controls.Add($alertListView)
 
     # Detail panel below the list
@@ -1688,15 +1696,14 @@ try {
             for ($i = $script:RenderedAlertCount; $i -lt $total; $i++) {
                 $a = $script:AlertHistory[$i]
                 $itemColor = switch ($a.Severity) {
-                    "CRIT" { [System.Drawing.Color]::FromArgb(255, 60, 60) }
-                    "HIGH" { [System.Drawing.Color]::FromArgb(255, 160, 40) }
-                    "MED"  { [System.Drawing.Color]::FromArgb(255, 220, 50) }
-                    "LOW"  { [System.Drawing.Color]::White }
+                    "CRIT" { [System.Drawing.Color]::FromArgb(255, 80, 90) }
+                    "HIGH" { [System.Drawing.Color]::FromArgb(255, 170, 80) }
+                    "MED"  { [System.Drawing.Color]::FromArgb(120, 190, 255) }
+                    "LOW"  { [System.Drawing.Color]::FromArgb(160, 220, 180) }
                     default { [System.Drawing.Color]::FromArgb(140, 140, 160) }
                 }
 
                 $item = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
-                [void]$item.SubItems.Add($a.Severity)
                 [void]$item.SubItems.Add($a.Category)
                 [void]$item.SubItems.Add($a.Title)
                 [void]$item.SubItems.Add($a.Message)
@@ -1705,7 +1712,6 @@ try {
                 [void]$script:AlertListView.Items.Insert(0, $item)
 
                 $r = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
-                [void]$r.SubItems.Add($a.Severity)
                 [void]$r.SubItems.Add($a.Category)
                 [void]$r.SubItems.Add($a.Title)
                 [void]$r.SubItems.Add($a.Message)
@@ -2582,7 +2588,6 @@ function Send-Alert {
         RemoteIP  = $RemoteIP
         Timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
         Details   = @{
-            "Severity"    = $severity
             "Alert Type"  = $Title
             "Description" = $Message
             "Computer"    = $env:COMPUTERNAME
