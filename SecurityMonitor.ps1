@@ -754,24 +754,26 @@ function Show-Dashboard {
 
     # Security posture indicators
     $spItems = @(
-        @{ L = "Defender"; X = 12 },
-        @{ L = "Firewall"; X = 165 },
-        @{ L = "UAC";      X = 318 },
-        @{ L = "RDP";      X = 471 }
+        @{ L = "Defender"; Idx = 0 },
+        @{ L = "Firewall"; Idx = 1 },
+        @{ L = "UAC";      Idx = 2 },
+        @{ L = "RDP";      Idx = 3 }
     )
     $script:SecPostureDots = @{}
     $script:SecPostureLabels = @{}
     foreach ($spi in $spItems) {
+        $spX = 12 + $spi.Idx * [int](($secPosturePanel.Width - 24) / 4)
         $dot = New-Object System.Windows.Forms.Panel
-        $dot.Location = New-Object System.Drawing.Point($spi.X, 28)
+        $dot.Location = New-Object System.Drawing.Point($spX, 28)
         $dot.Size = New-Object System.Drawing.Size(12, 12)
+        $dot.Tag = "spdot_$($spi.Idx)"
         $dot.BackColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
         $secPosturePanel.Controls.Add($dot)
         $script:SecPostureDots[$spi.L] = $dot
 
         $spLbl = New-Object System.Windows.Forms.Label
         $spLbl.Text = "$($spi.L): ..."
-        $spLbl.Location = New-Object System.Drawing.Point(($spi.X + 18), 26)
+        $spLbl.Location = New-Object System.Drawing.Point(($spX + 18), 26)
         $spLbl.Size = New-Object System.Drawing.Size(130, 16)
         $spLbl.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
         $spLbl.ForeColor = $colTextDim
@@ -804,6 +806,22 @@ function Show-Dashboard {
         $secPosturePanel.Controls.Add($spLbl)
         $script:SecPostureLabels[$spi.L] = $spLbl
     }
+
+    # Resize handler for security posture indicators
+    $secPosturePanel.Add_Resize({
+        try {
+            $pw = $this.ClientSize.Width
+            $idx = 0
+            $dots = @($this.Controls | Where-Object { $_.Tag -match "^spdot_" } | Sort-Object { [int]($_.Tag -replace 'spdot_','') })
+            $labels = @($this.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.Cursor -eq [System.Windows.Forms.Cursors]::Hand } | Sort-Object { $_.Location.X })
+            $slotW = [int](($pw - 24) / 4)
+            for ($i = 0; $i -lt $dots.Count -and $i -lt $labels.Count; $i++) {
+                $x = 12 + $i * $slotW
+                $dots[$i].Location = New-Object System.Drawing.Point($x, 28)
+                $labels[$i].Location = New-Object System.Drawing.Point(($x + 18), 26)
+            }
+        } catch {}
+    })
 
     # ── Network Activity Panel ──
     $netPanel = New-Object System.Windows.Forms.Panel
@@ -989,6 +1007,7 @@ function Show-Dashboard {
         $gp.Location = New-Object System.Drawing.Point($x, $y)
         $gp.Size = New-Object System.Drawing.Size(240, 44)
         $gp.BackColor = $colCard
+        $gp.Tag = "gauge"
         $parent.Controls.Add($gp)
 
         $gl = New-Object System.Windows.Forms.Label
@@ -1076,6 +1095,50 @@ function Show-Dashboard {
     })
     $statusPage.Controls.Add($recentList)
 
+    # ── Status page resize handler: redistribute stat cards, gauge bars, and security posture indicators ──
+    $statusPage.Add_Resize({
+        try {
+            $pw = $this.ClientSize.Width
+            $pad = 25
+            $gap = 10
+
+            # Redistribute stat cards (4 cards, Tag="card")
+            $cards = @($this.Controls | Where-Object { $_.Tag -eq "card" } | Sort-Object { $_.Location.X })
+            if ($cards.Count -eq 4) {
+                $cardW = [Math]::Max(120, [int](($pw - 2 * $pad - 3 * $gap) / 4))
+                for ($i = 0; $i -lt 4; $i++) {
+                    $cards[$i].Location = New-Object System.Drawing.Point(($pad + $i * ($cardW + $gap)), $cards[$i].Location.Y)
+                    $cards[$i].Size = New-Object System.Drawing.Size($cardW, $cards[$i].Height)
+                    # Resize accent bar height
+                    foreach ($c in $cards[$i].Controls) {
+                        if ($c -is [System.Windows.Forms.Panel] -and $c.Width -le 5) {
+                            $c.Size = New-Object System.Drawing.Size($c.Width, $cards[$i].Height)
+                        }
+                    }
+                }
+            }
+
+            # Redistribute gauge bars (3 bars, Tag="gauge")
+            $gauges = @($this.Controls | Where-Object { $_.Tag -eq "gauge" } | Sort-Object { $_.Location.X })
+            if ($gauges.Count -eq 3) {
+                $gaugeW = [Math]::Max(150, [int](($pw - 2 * $pad - 2 * $gap) / 3))
+                for ($i = 0; $i -lt 3; $i++) {
+                    $gauges[$i].Location = New-Object System.Drawing.Point(($pad + $i * ($gaugeW + $gap)), $gauges[$i].Location.Y)
+                    $gauges[$i].Size = New-Object System.Drawing.Size($gaugeW, $gauges[$i].Height)
+                    # Resize progress bar background inside gauge
+                    foreach ($c in $gauges[$i].Controls) {
+                        if ($c -is [System.Windows.Forms.Panel] -and $c.Location.Y -ge 20) {
+                            $c.Size = New-Object System.Drawing.Size(($gaugeW - 20), $c.Height)
+                        }
+                        # Reposition percentage label
+                        if ($c -is [System.Windows.Forms.Label] -and $c.Name -match "_val$") {
+                            $c.Location = New-Object System.Drawing.Point(($gaugeW - 60), $c.Location.Y)
+                        }
+                    }
+                }
+            }
+        } catch {}
+    })
 
     # ═══════════════════════════════════════════════════════════════
     #  PAGE 2: ALERTS (full history + detail panel)
@@ -1256,7 +1319,7 @@ function Show-Dashboard {
     $alertListView.Name = "alertListView"
     $alertListView.Location = New-Object System.Drawing.Point(25, 92)
     $alertListView.Size = New-Object System.Drawing.Size(770, 255)
-    $alertListView.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $alertListView.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
     Style-ListView $alertListView
     [void]$alertListView.Columns.Add("Time", 120)
     [void]$alertListView.Columns.Add("Category", 100)
@@ -1271,7 +1334,7 @@ function Show-Dashboard {
     $detailBox.Size = New-Object System.Drawing.Size(770, 230)
     $detailBox.BackColor = $colCard
     $detailBox.AutoScroll = $true
-    $detailBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
+    $detailBox.Anchor = [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
     $alertsPage.Controls.Add($detailBox)
 
     $script:DetailTitle = New-Object System.Windows.Forms.Label
@@ -2086,6 +2149,7 @@ try {
         $descLbl.Size = New-Object System.Drawing.Size(700, 17)
         $descLbl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
         $descLbl.ForeColor = $colTextDim
+        $descLbl.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
         $card.Controls.Add($descLbl)
 
         # Instant save on toggle - use Tag to store the config key
@@ -2163,6 +2227,7 @@ try {
     $threatDescLbl.Size = New-Object System.Drawing.Size(700, 17)
     $threatDescLbl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
     $threatDescLbl.ForeColor = $colTextDim
+    $threatDescLbl.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
     $threatCard.Controls.Add($threatDescLbl)
 
     $threatCb.Tag = "ShowThreatDetails"
@@ -2217,6 +2282,7 @@ try {
     $toastDescLbl.Size = New-Object System.Drawing.Size(700, 17)
     $toastDescLbl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
     $toastDescLbl.ForeColor = $colTextDim
+    $toastDescLbl.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
     $toastCard.Controls.Add($toastDescLbl)
 
     $toastCb.Tag = "EnableToastNotifications"
