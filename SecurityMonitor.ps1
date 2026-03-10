@@ -92,6 +92,33 @@ function Show-ConfigGUI {
         $yPos += 44
     }
 
+    # -- Threat details toggle --
+    $yPos += 10
+    $sepLine = New-Object System.Windows.Forms.Panel
+    $sepLine.Location = New-Object System.Drawing.Point(20, $yPos)
+    $sepLine.Size = New-Object System.Drawing.Size(450, 1)
+    $sepLine.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 60)
+    $form.Controls.Add($sepLine)
+    $yPos += 10
+
+    $threatCbInit = New-Object System.Windows.Forms.CheckBox
+    $threatCbInit.Text = "Detailed Threat Info and Severity Levels"
+    $threatCbInit.Location = New-Object System.Drawing.Point(25, $yPos)
+    $threatCbInit.Size = New-Object System.Drawing.Size(450, 22)
+    $threatCbInit.Checked = $false
+    $threatCbInit.ForeColor = [System.Drawing.Color]::White
+    $threatCbInit.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $form.Controls.Add($threatCbInit)
+
+    $threatDescInit = New-Object System.Windows.Forms.Label
+    $threatDescInit.Text = "When enabled, shows color-coded severity levels and threat/recommendation details."
+    $threatDescInit.Location = New-Object System.Drawing.Point(45, ($yPos + 22))
+    $threatDescInit.Size = New-Object System.Drawing.Size(440, 18)
+    $threatDescInit.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $threatDescInit.ForeColor = [System.Drawing.Color]::FromArgb(140, 140, 140)
+    $form.Controls.Add($threatDescInit)
+    $yPos += 44
+
     # Select All / Deselect All buttons
     $selectAllBtn = New-Object System.Windows.Forms.Button
     $selectAllBtn.Text = "Select All"
@@ -133,11 +160,13 @@ function Show-ConfigGUI {
         foreach ($key in $checkboxes.Keys) {
             $config[$key] = $checkboxes[$key].Checked
         }
+        $config["ShowThreatDetails"] = $threatCbInit.Checked
         return $config
     } else {
         # User closed the window - enable everything by default
         $config = @{}
         foreach ($opt in $options) { $config[$opt.Key] = $true }
+        $config["ShowThreatDetails"] = $false
         return $config
     }
 }
@@ -1543,6 +1572,89 @@ try {
     })
     $detailBox.Controls.Add($restoreRegBtn)
 
+    # Kill Process button
+    $script:KillProcessBtn = New-Object System.Windows.Forms.Button
+    $killProcessBtn = $script:KillProcessBtn
+    $killProcessBtn.Text = "Kill Process"
+    $killProcessBtn.Location = New-Object System.Drawing.Point(15, 300)
+    $killProcessBtn.Size = New-Object System.Drawing.Size(220, 34)
+    $killProcessBtn.FlatStyle = "Flat"
+    $killProcessBtn.BackColor = [System.Drawing.Color]::FromArgb(160, 40, 40)
+    $killProcessBtn.ForeColor = $colTextMain
+    $killProcessBtn.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $killProcessBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $killProcessBtn.Visible = $false
+    $killProcessBtn.Tag = $null
+    $killProcessBtn.Add_Click({
+        $info = $this.Tag
+        if (-not $info) { return }
+        $pid = $info.PID
+        $procName = $info.ProcessName
+        $procPath = $info.Path
+
+        $confirm = [System.Windows.Forms.MessageBox]::Show(
+            "Process: $procName`nPID: $pid`nPath: $procPath`n`nAre you sure you want to kill this process?",
+            "Kill Process - Confirm",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+        if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+
+        try {
+            # First try without elevation
+            $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
+            if (-not $proc) {
+                $this.Text = "Process not running"
+                $this.BackColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+                $this.Enabled = $false
+                return
+            }
+            $proc | Stop-Process -Force -ErrorAction Stop
+            $this.Text = "Process killed"
+            $this.BackColor = [System.Drawing.Color]::FromArgb(30, 130, 60)
+            $this.Enabled = $false
+        } catch {
+            # Access denied - try with UAC elevation
+            try {
+                $tmpScript = [System.IO.Path]::GetTempFileName() + ".ps1"
+                $tmpResult = [System.IO.Path]::GetTempFileName()
+                $scriptContent = @"
+try {
+    Stop-Process -Id $pid -Force -ErrorAction Stop
+    'SUCCESS' | Set-Content -Path '$tmpResult' -Encoding UTF8
+} catch {
+    "ERROR: `$(`$_.Exception.Message)" | Set-Content -Path '$tmpResult' -Encoding UTF8
+}
+"@
+                $scriptContent | Set-Content -Path $tmpScript -Encoding UTF8
+                $p = Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tmpScript`"" -Verb RunAs -PassThru -WindowStyle Hidden -ErrorAction Stop
+                $p.WaitForExit(15000)
+
+                if (Test-Path $tmpResult) {
+                    $result = (Get-Content $tmpResult -Raw).Trim()
+                    if ($result -eq "SUCCESS") {
+                        $this.Text = "Process killed (elevated)"
+                        $this.BackColor = [System.Drawing.Color]::FromArgb(30, 130, 60)
+                        $this.Enabled = $false
+                    } else {
+                        [System.Windows.Forms.MessageBox]::Show($result, "Kill Process - Error", "OK", "Error")
+                    }
+                } else {
+                    [System.Windows.Forms.MessageBox]::Show("Operation timed out.", "Kill Process", "OK", "Warning")
+                }
+                Remove-Item $tmpScript -Force -ErrorAction SilentlyContinue
+                Remove-Item $tmpResult -Force -ErrorAction SilentlyContinue
+            } catch {
+                if ($_.Exception.Message -match "canceled by the user") {
+                    [System.Windows.Forms.MessageBox]::Show("UAC elevation was cancelled.", "Kill Process", "OK", "Information")
+                } else {
+                    [System.Windows.Forms.MessageBox]::Show("Error: $($_.Exception.Message)", "Kill Process - Error", "OK", "Error")
+                }
+            }
+        }
+    })
+    $detailBox.Controls.Add($killProcessBtn)
+
     # Click on alert row → populate detail panel with auto-sizing
     $alertListView.Add_SelectedIndexChanged({
         try {
@@ -1553,7 +1665,11 @@ try {
             $ad = $script:AlertHistory[$idx]
 
             $script:DetailTitle.Text = "$($ad.Title)"
-            $script:DetailTitle.ForeColor = [System.Drawing.Color]::FromArgb(220, 50, 60)
+            if ($ad.Severity -ne "INFO") {
+                $script:DetailTitle.ForeColor = [System.Drawing.Color]::FromArgb(220, 50, 60)
+            } else {
+                $script:DetailTitle.ForeColor = [System.Drawing.Color]::FromArgb(100, 160, 255)
+            }
 
             $script:DetailContent.SuspendLayout()
             $script:DetailContent.Controls.Clear()
@@ -1604,6 +1720,7 @@ try {
             $script:BlockIpBtn.Visible = $false
             $script:RegeditBtn.Visible = $false
             $script:RestoreRegBtn.Visible = $false
+            $script:KillProcessBtn.Visible = $false
 
             # Row 1: OpenLog is always shown + context buttons
             $script:OpenLogBtn.Location = New-Object System.Drawing.Point($btnX, $btnY)
@@ -1696,12 +1813,32 @@ try {
                 }
             }
 
+            # Show Kill Process button if alert has PID
+            $alertPid = $ad.Details["PID"]
+            if ($alertPid) {
+                $script:KillProcessBtn.Tag = @{
+                    PID         = [int]$alertPid
+                    ProcessName = $ad.Details["Process Name"]
+                    Path        = $ad.Details["Path"]
+                }
+                $script:KillProcessBtn.Text = "Kill Process (PID: $alertPid)"
+                $script:KillProcessBtn.BackColor = [System.Drawing.Color]::FromArgb(160, 40, 40)
+                $script:KillProcessBtn.Enabled = $true
+                # Position: Row 2, after Block IP if visible, or after Restore Reg, or start of row
+                $killX = $btnX
+                if ($ad.RemoteIP) { $killX = $btnX + $script:BlockIpBtn.Width + 10 }
+                if ($script:RestoreRegBtn.Visible) { $killX = $script:RestoreRegBtn.Right + 10 }
+                $script:KillProcessBtn.Location = New-Object System.Drawing.Point($killX, $btnRow2Y)
+                $script:KillProcessBtn.Visible = $true
+            }
+
             # Bring all visible buttons to front
             $script:OpenLogBtn.BringToFront()
             $script:IpLookupBtn.BringToFront()
             $script:RegeditBtn.BringToFront()
             $script:BlockIpBtn.BringToFront()
             $script:RestoreRegBtn.BringToFront()
+            $script:KillProcessBtn.BringToFront()
         } catch {}
     })
 
@@ -1849,6 +1986,79 @@ try {
 
         $sy += 52
     }
+
+    # ── Separator: Display Settings ──
+    $sy += 16
+    $dispSepLine = New-Object System.Windows.Forms.Panel
+    $dispSepLine.Location = New-Object System.Drawing.Point(25, $sy)
+    $dispSepLine.Size = New-Object System.Drawing.Size(770, 1)
+    $dispSepLine.BackColor = [System.Drawing.Color]::FromArgb(60, 60, 80)
+    $dispSepLine.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $settingsPage.Controls.Add($dispSepLine)
+    $sy += 12
+
+    $dispTitle = New-Object System.Windows.Forms.Label
+    $dispTitle.Text = "Display Settings"
+    $dispTitle.Location = New-Object System.Drawing.Point(25, $sy)
+    $dispTitle.Size = New-Object System.Drawing.Size(400, 26)
+    $dispTitle.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+    $dispTitle.ForeColor = $colAccent
+    $settingsPage.Controls.Add($dispTitle)
+    $sy += 30
+
+    # -- Detayli Tehdit Bilgisi toggle --
+    $threatCard = New-Object System.Windows.Forms.Panel
+    $threatCard.Location = New-Object System.Drawing.Point(25, $sy)
+    $threatCard.Size = New-Object System.Drawing.Size(770, 48)
+    $threatCard.BackColor = $colCard
+    $threatCard.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $settingsPage.Controls.Add($threatCard)
+
+    $threatIcon = New-Object System.Windows.Forms.Label
+    $threatIcon.Text = "[!]"
+    $threatIcon.Location = New-Object System.Drawing.Point(10, 5)
+    $threatIcon.Size = New-Object System.Drawing.Size(40, 20)
+    $threatIcon.Font = New-Object System.Drawing.Font("Consolas", 9, [System.Drawing.FontStyle]::Bold)
+    $threatIcon.ForeColor = [System.Drawing.Color]::FromArgb(255, 170, 80)
+    $threatCard.Controls.Add($threatIcon)
+
+    $threatCb = New-Object System.Windows.Forms.CheckBox
+    $threatCb.Location = New-Object System.Drawing.Point(8, 24)
+    $threatCb.Size = New-Object System.Drawing.Size(18, 18)
+    $threatCb.ForeColor = $colTextMain
+    $threatCb.BackColor = $colCard
+    $propThreat = $script:NotifyConfig.PSObject.Properties["ShowThreatDetails"]
+    $threatCb.Checked = if ($null -eq $propThreat) { $false } else { $propThreat.Value -eq $true }
+    $threatCard.Controls.Add($threatCb)
+
+    $threatLabel = New-Object System.Windows.Forms.Label
+    $threatLabel.Text = "Detailed Threat Info and Severity Levels"
+    $threatLabel.Location = New-Object System.Drawing.Point(55, 5)
+    $threatLabel.Size = New-Object System.Drawing.Size(500, 20)
+    $threatLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
+    $threatLabel.ForeColor = $colTextMain
+    $threatCard.Controls.Add($threatLabel)
+
+    $threatDescLbl = New-Object System.Windows.Forms.Label
+    $threatDescLbl.Text = "When enabled, shows color-coded severity levels and threat/recommendation details. When off, all alerts appear neutral."
+    $threatDescLbl.Location = New-Object System.Drawing.Point(55, 27)
+    $threatDescLbl.Size = New-Object System.Drawing.Size(700, 17)
+    $threatDescLbl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $threatDescLbl.ForeColor = $colTextDim
+    $threatCard.Controls.Add($threatDescLbl)
+
+    $threatCb.Tag = "ShowThreatDetails"
+    $threatCb.Add_CheckedChanged({
+        try {
+            $senderCb = $this
+            $cfgKey = $senderCb.Tag
+            $script:NotifyConfig | Add-Member -MemberType NoteProperty -Name $cfgKey -Value $senderCb.Checked -Force
+            if (-not $script:SuppressSettingsSave) {
+                $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $script:ConfigFilePath -Encoding UTF8
+            }
+        } catch {}
+    })
+    $sy += 52
 
     # Select All / Deselect All buttons
     $selAllBtn = New-Object System.Windows.Forms.Button
@@ -2578,11 +2788,19 @@ function Send-ToastNotification {
     }
 }
 
+function Test-ThreatDetailsEnabled {
+    $val = $script:NotifyConfig.PSObject.Properties["ShowThreatDetails"]
+    if ($null -eq $val) { return $false }
+    return $val.Value -eq $true
+}
+
 function Get-AlertSeverity {
     param([string]$Title, [string]$Category)
+    # When threat details are disabled, always return INFO (neutral)
+    if (-not (Test-ThreatDetailsEnabled)) { return "INFO" }
     if ($Category -eq "Registry Tampering") { return "CRIT" }
     if ($Title -match "FIRMWARE.*(DELETED|MODIFIED)") { return "CRIT" }
-    if ($Title -match "REGISTRY TAMPERING|EXECUTABLE BLOCKED|DEFENDER EXCLUSION") { return "CRIT" }
+    if ($Title -match "Kayit Defteri Degisikligi|Program Engeli|Defender Istisnasi") { return "CRIT" }
     if ($Category -eq "Connection" -or $Title -match "UNKNOWN CONNECTION") { return "HIGH" }
     if ($Category -eq "Process" -or $Title -match "UNSIGNED PROCESS") { return "HIGH" }
     if ($Title -match "REMOTE LOGON|FAILED LOGON|NEW USER") { return "HIGH" }
@@ -2620,7 +2838,10 @@ function Send-Alert {
             "User"        = $env:USERNAME
         }
     }
+    $showThreat = Test-ThreatDetailsEnabled
     foreach ($key in $ExtraDetails.Keys) {
+        # Hide threat/recommendation fields when threat details are off
+        if (-not $showThreat -and $key -in @("Bilgi","Oneri","Threat","Action")) { continue }
         $alertData.Details[$key] = $ExtraDetails[$key]
     }
     if ($Category -eq "Connection" -and $RemoteIP) {
@@ -2643,12 +2864,20 @@ function Send-Alert {
 
     if ($shouldNotify) {
         $tipIcon = if ($severity -eq "CRIT") { "Error" } elseif ($severity -match "HIGH|MED") { "Warning" } else { "Info" }
-        Send-ToastNotification -Title "[$severity] $Title" -Message $Message -AlertData $alertData
+        if ($showThreat) {
+            Send-ToastNotification -Title "[$severity] $Title" -Message $Message -AlertData $alertData
+        } else {
+            Send-ToastNotification -Title $Title -Message $Message -AlertData $alertData
+        }
     }
 
     if (-not $Silent) {
-        Write-Alert "[$severity] $Title - $Message"
-        if ($shouldNotify) {
+        if ($showThreat) {
+            Write-Alert "[$severity] $Title - $Message"
+        } else {
+            Write-Alert "$Title - $Message"
+        }
+        if ($shouldNotify -and $showThreat) {
             try {
                 if ($severity -eq "CRIT") { [System.Console]::Beep(800, 200); [System.Console]::Beep(1200, 200); [System.Console]::Beep(1600, 300) }
                 elseif ($severity -eq "HIGH") { [System.Console]::Beep(1000, 300); [System.Console]::Beep(1500, 300) }
@@ -3144,153 +3373,153 @@ function Watch-RegistryTampering {
 
     $tamperChecks = @(
         # IFEO debugger redirects (blocks executables from running)
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\powershell.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on PowerShell - prevents PowerShell from running" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\powershell_ise.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on PowerShell ISE" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Task Manager - blocks taskmgr" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\regedit.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Registry Editor" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\MsMpEng.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Defender Engine - disables antivirus" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\MpCmdRun.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Defender CLI" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\cmd.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Command Prompt" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\mmc.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Management Console" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\powershell.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: PowerShell" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\powershell_ise.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: PowerShell ISE" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: Gorev Yoneticisi" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\regedit.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: Kayit Defteri Duzenleyicisi" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\MsMpEng.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: Defender motoru" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\MpCmdRun.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: Defender CLI" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\cmd.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: Komut Istemi" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\mmc.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: Yonetim Konsolu" },
 
         # Windows Defender disabling
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender"; Name = "DisableAntiSpyware"; BadIf = "1"; Desc = "Windows Defender AntiSpyware DISABLED via policy" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender"; Name = "DisableAntiVirus"; BadIf = "1"; Desc = "Windows Defender AntiVirus DISABLED via policy" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableRealtimeMonitoring"; BadIf = "1"; Desc = "Defender Real-Time Protection DISABLED" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableBehaviorMonitoring"; BadIf = "1"; Desc = "Defender Behavior Monitoring DISABLED" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableOnAccessProtection"; BadIf = "1"; Desc = "Defender On-Access Protection DISABLED" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableIOAVProtection"; BadIf = "1"; Desc = "Defender Download Scanning DISABLED" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableScanOnRealtimeEnable"; BadIf = "1"; Desc = "Defender Scan on RT Enable DISABLED" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender"; Name = "DisableAntiSpyware"; BadIf = "1"; Desc = "Windows Defender AntiSpyware ilke ile kapatilmis" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender"; Name = "DisableAntiVirus"; BadIf = "1"; Desc = "Windows Defender AntiVirus ilke ile kapatilmis" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableRealtimeMonitoring"; BadIf = "1"; Desc = "Defender gercek zamanli koruma kapatilmis" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableBehaviorMonitoring"; BadIf = "1"; Desc = "Defender davranis izleme kapatilmis" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableOnAccessProtection"; BadIf = "1"; Desc = "Defender erisim korumasi kapatilmis" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableIOAVProtection"; BadIf = "1"; Desc = "Defender indirme taramasi kapatilmis" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"; Name = "DisableScanOnRealtimeEnable"; BadIf = "1"; Desc = "Defender gercek zamanli tarama baslatma kapatilmis" },
 
         # UAC bypass / disable
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"; Name = "EnableLUA"; BadIf = "0"; Desc = "UAC COMPLETELY DISABLED - critical security bypass" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"; Name = "ConsentPromptBehaviorAdmin"; BadIf = "0"; Desc = "UAC admin prompt DISABLED - silent elevation" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"; Name = "EnableLUA"; BadIf = "0"; Desc = "UAC (Kullanici Hesabi Denetimi) kapatilmis" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"; Name = "ConsentPromptBehaviorAdmin"; BadIf = "0"; Desc = "UAC yonetici onay istemi kapatilmis" },
 
         # UAC bypass via COM hijacking
-        @{ Path = "HKCU:\Software\Classes\ms-settings\shell\open\command"; Name = "(Default)"; BadIf = "exists"; Desc = "UAC BYPASS via ms-settings COM hijack" },
-        @{ Path = "HKCU:\Software\Classes\mscfile\shell\open\command"; Name = "(Default)"; BadIf = "exists"; Desc = "UAC BYPASS via mscfile COM hijack" },
+        @{ Path = "HKCU:\Software\Classes\ms-settings\shell\open\command"; Name = "(Default)"; BadIf = "exists"; Desc = "ms-settings COM yonlendirmesi mevcut" },
+        @{ Path = "HKCU:\Software\Classes\mscfile\shell\open\command"; Name = "(Default)"; BadIf = "exists"; Desc = "mscfile COM yonlendirmesi mevcut" },
 
         # Disable Task Manager and system tools
-        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System"; Name = "DisableTaskMgr"; BadIf = "1"; Desc = "Task Manager DISABLED via policy" },
-        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System"; Name = "DisableRegistryTools"; BadIf = "1"; Desc = "Registry Editor DISABLED via policy" },
-        @{ Path = "HKCU:\Software\Policies\Microsoft\Windows\System"; Name = "DisableCMD"; BadIf = "1"; Desc = "Command Prompt DISABLED via policy" },
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System"; Name = "DisableTaskMgr"; BadIf = "1"; Desc = "Gorev Yoneticisi ilke ile kapatilmis" },
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System"; Name = "DisableRegistryTools"; BadIf = "1"; Desc = "Kayit Defteri Duzenleyicisi ilke ile kapatilmis" },
+        @{ Path = "HKCU:\Software\Policies\Microsoft\Windows\System"; Name = "DisableCMD"; BadIf = "1"; Desc = "Komut Istemi ilke ile kapatilmis" },
 
         # PowerShell execution and logging
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"; Name = "EnableScriptBlockLogging"; BadIf = "0"; Desc = "PowerShell Script Block Logging DISABLED - hides attacker commands" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging"; Name = "EnableModuleLogging"; BadIf = "0"; Desc = "PowerShell Module Logging DISABLED" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription"; Name = "EnableTranscripting"; BadIf = "0"; Desc = "PowerShell Transcription DISABLED" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"; Name = "EnableScriptBlockLogging"; BadIf = "0"; Desc = "PowerShell Script Block kaydi kapatilmis" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging"; Name = "EnableModuleLogging"; BadIf = "0"; Desc = "PowerShell modul kaydi kapatilmis" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription"; Name = "EnableTranscripting"; BadIf = "0"; Desc = "PowerShell transkripsiyon kapatilmis" },
 
         # AMSI (Antimalware Scan Interface) disable
-        @{ Path = "HKCU:\Software\Microsoft\Windows Script\Settings"; Name = "AmsiEnable"; BadIf = "0"; Desc = "AMSI DISABLED - allows malicious scripts to bypass scanning" },
+        @{ Path = "HKCU:\Software\Microsoft\Windows Script\Settings"; Name = "AmsiEnable"; BadIf = "0"; Desc = "AMSI (zararli yazilim tarama arayuzu) kapatilmis" },
 
         # Firewall disable
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\StandardProfile"; Name = "EnableFirewall"; BadIf = "0"; Desc = "Windows Firewall DISABLED (Standard profile)" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile"; Name = "EnableFirewall"; BadIf = "0"; Desc = "Windows Firewall DISABLED (Domain profile)" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile"; Name = "EnableFirewall"; BadIf = "0"; Desc = "Windows Firewall DISABLED (Public profile)" },
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\StandardProfile"; Name = "EnableFirewall"; BadIf = "0"; Desc = "Windows Firewall service DISABLED (Standard)" },
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\PublicProfile"; Name = "EnableFirewall"; BadIf = "0"; Desc = "Windows Firewall service DISABLED (Public)" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\StandardProfile"; Name = "EnableFirewall"; BadIf = "0"; Desc = "Windows Guvenlik Duvari kapatilmis (Standart profil)" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile"; Name = "EnableFirewall"; BadIf = "0"; Desc = "Windows Guvenlik Duvari kapatilmis (Etki Alani profili)" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile"; Name = "EnableFirewall"; BadIf = "0"; Desc = "Windows Guvenlik Duvari kapatilmis (Genel profil)" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\StandardProfile"; Name = "EnableFirewall"; BadIf = "0"; Desc = "Windows Guvenlik Duvari servisi kapatilmis (Standart)" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\PublicProfile"; Name = "EnableFirewall"; BadIf = "0"; Desc = "Windows Guvenlik Duvari servisi kapatilmis (Genel)" },
 
         # Event Log tampering
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Security"; Name = "Enabled"; BadIf = "0"; Desc = "Security Event Log DISABLED" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\System"; Name = "Enabled"; BadIf = "0"; Desc = "System Event Log DISABLED" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\Security"; Name = "Enabled"; BadIf = "0"; Desc = "Guvenlik olay kaydi kapatilmis" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\EventLog\System"; Name = "Enabled"; BadIf = "0"; Desc = "Sistem olay kaydi kapatilmis" },
 
-        # Notification suppression (hides security alerts)
-        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"; Name = "EnableBalloonTips"; BadIf = "0"; Desc = "Balloon notification tips DISABLED - hides security alerts" },
-        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"; Name = "NoTrayItemsDisplay"; BadIf = "1"; Desc = "System tray icons HIDDEN - hides security monitor" },
-        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"; Name = "HideSCAHealth"; BadIf = "1"; Desc = "Security Center icon HIDDEN" },
+        # Notification suppression
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"; Name = "EnableBalloonTips"; BadIf = "0"; Desc = "Balon bildirimleri kapatilmis" },
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"; Name = "NoTrayItemsDisplay"; BadIf = "1"; Desc = "Sistem tepsisi simgeleri gizlenmis" },
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"; Name = "HideSCAHealth"; BadIf = "1"; Desc = "Guvenlik Merkezi simgesi gizlenmis" },
 
         # Executable blocklist
-        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"; Name = "DisallowRun"; BadIf = "1"; Desc = "Executable blocklist ACTIVE - may block security tools" },
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"; Name = "DisallowRun"; BadIf = "1"; Desc = "Calistirilabilir dosya engel listesi aktif" },
 
         # Security service tampering
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\WinDefend"; Name = "Start"; BadIf = "4"; Desc = "Windows Defender SERVICE DISABLED" },
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\wscsvc"; Name = "Start"; BadIf = "4"; Desc = "Security Center SERVICE DISABLED" },
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\mpssvc"; Name = "Start"; BadIf = "4"; Desc = "Firewall SERVICE DISABLED" },
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog"; Name = "Start"; BadIf = "4"; Desc = "Event Log SERVICE DISABLED" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\WinDefend"; Name = "Start"; BadIf = "4"; Desc = "Windows Defender servisi kapatilmis" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\wscsvc"; Name = "Start"; BadIf = "4"; Desc = "Guvenlik Merkezi servisi kapatilmis" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\mpssvc"; Name = "Start"; BadIf = "4"; Desc = "Guvenlik Duvari servisi kapatilmis" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog"; Name = "Start"; BadIf = "4"; Desc = "Olay Kaydi servisi kapatilmis" },
 
-        # Winlogon persistence hijack
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"; Name = "Shell"; BadIf = "notexplorer"; Desc = "Winlogon Shell HIJACKED - should be explorer.exe" },
+        # Winlogon persistence
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"; Name = "Shell"; BadIf = "notexplorer"; Desc = "Winlogon Shell degeri varsayilandan farkli" },
 
-        # MiniNt key (disables security event logging)
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\MiniNt"; Name = "(KeyExists)"; BadIf = "exists"; Desc = "MiniNt key EXISTS - disables Security event logging (WinPE trick)" },
+        # MiniNt key
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\MiniNt"; Name = "(KeyExists)"; BadIf = "exists"; Desc = "MiniNt anahtari mevcut (guvenlik olay kaydini etkiler)" },
 
         # Security Center notification suppression
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Security Center"; Name = "AntiVirusDisableNotify"; BadIf = "1"; Desc = "AntiVirus disable notifications SUPPRESSED" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Security Center"; Name = "FirewallDisableNotify"; BadIf = "1"; Desc = "Firewall disable notifications SUPPRESSED" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Security Center"; Name = "UpdatesDisableNotify"; BadIf = "1"; Desc = "Update disable notifications SUPPRESSED" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Security Center"; Name = "AntiVirusDisableNotify"; BadIf = "1"; Desc = "Antiviurs kapatma bildirimleri sessize alinmis" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Security Center"; Name = "FirewallDisableNotify"; BadIf = "1"; Desc = "Guvenlik duvari kapatma bildirimleri sessize alinmis" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Security Center"; Name = "UpdatesDisableNotify"; BadIf = "1"; Desc = "Guncelleme kapatma bildirimleri sessize alinmis" },
 
         # Windows Script Host disable
-        @{ Path = "HKLM:\Software\Microsoft\Windows Script Host\Settings"; Name = "Enabled"; BadIf = "0"; Desc = "Windows Script Host DISABLED" },
-        @{ Path = "HKCU:\Software\Microsoft\Windows Script Host\Settings"; Name = "Enabled"; BadIf = "0"; Desc = "Windows Script Host DISABLED (user)" },
+        @{ Path = "HKLM:\Software\Microsoft\Windows Script Host\Settings"; Name = "Enabled"; BadIf = "0"; Desc = "Windows Script Host kapatilmis" },
+        @{ Path = "HKCU:\Software\Microsoft\Windows Script Host\Settings"; Name = "Enabled"; BadIf = "0"; Desc = "Windows Script Host kapatilmis (kullanici)" },
 
-        # ═══ PowerShell Execution Policy tampering (blocks scripts from running) ═══
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell"; Name = "ExecutionPolicy"; BadIf = "Restricted"; Desc = "PowerShell ExecutionPolicy set to RESTRICTED - blocks ALL scripts" },
-        @{ Path = "HKCU:\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell"; Name = "ExecutionPolicy"; BadIf = "Restricted"; Desc = "PowerShell ExecutionPolicy RESTRICTED (user level)" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell"; Name = "EnableScripts"; BadIf = "0"; Desc = "PowerShell scripts DISABLED via Group Policy" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell"; Name = "ExecutionPolicy"; BadIf = "Restricted"; Desc = "PowerShell ExecutionPolicy RESTRICTED via GPO" },
+        # ═══ PowerShell Execution Policy ═══
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell"; Name = "ExecutionPolicy"; BadIf = "Restricted"; Desc = "PowerShell ExecutionPolicy 'Restricted' olarak ayarlanmis" },
+        @{ Path = "HKCU:\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell"; Name = "ExecutionPolicy"; BadIf = "Restricted"; Desc = "PowerShell ExecutionPolicy 'Restricted' (kullanici duzeyi)" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell"; Name = "EnableScripts"; BadIf = "0"; Desc = "PowerShell betikleri Grup Ilkesi ile kapatilmis" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell"; Name = "ExecutionPolicy"; BadIf = "Restricted"; Desc = "PowerShell ExecutionPolicy GPO ile 'Restricted'" },
 
-        # ═══ PowerShell Constrained Language Mode (cripples .NET access = kills WinForms GUI) ═══
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; Name = "__PSLockdownPolicy"; BadIf = "4"; Desc = "PowerShell CONSTRAINED LANGUAGE MODE - blocks .NET/WinForms/CIM calls" },
+        # ═══ PowerShell Constrained Language Mode ═══
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; Name = "__PSLockdownPolicy"; BadIf = "4"; Desc = "PowerShell Kisitli Dil Modu aktif (.NET erisimini sinirlar)" },
 
-        # ═══ IFEO targeting SecurityMonitor specifically ═══
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\SecurityMonitor.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger targeting SecurityMonitor!" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\pwsh.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on PowerShell 7 (pwsh.exe)" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\wscript.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on WScript" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\cscript.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on CScript" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\eventvwr.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Event Viewer" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\msconfig.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on MSConfig" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\perfmon.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Performance Monitor" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\procexp.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Process Explorer" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\procexp64.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Process Explorer 64" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\autoruns.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Autoruns" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\autoruns64.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger on Autoruns64" },
+        # ═══ IFEO ayarlari ═══
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\SecurityMonitor.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: SecurityMonitor" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\pwsh.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: PowerShell 7 (pwsh.exe)" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\wscript.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: WScript" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\cscript.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: CScript" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\eventvwr.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: Olay Goruntuleyicisi" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\msconfig.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: MSConfig" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\perfmon.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: Performans Izleyicisi" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\procexp.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: Process Explorer" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\procexp64.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: Process Explorer 64" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\autoruns.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: Autoruns" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\autoruns64.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger ayari mevcut: Autoruns64" },
 
-        # ═══ Software Restriction Policies (SRP - can block PowerShell/scripts) ═══
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers"; Name = "DefaultLevel"; BadIf = "0"; Desc = "Software Restriction Policy: DEFAULT DISALLOWED - blocks unsigned executables" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers"; Name = "TransparentEnabled"; BadIf = "0"; Desc = "SRP transparency DISABLED - blocks DLL loading" },
+        # ═══ Yazilim Kisitlama Ilkeleri ═══
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers"; Name = "DefaultLevel"; BadIf = "0"; Desc = "Yazilim Kisitlama Ilkesi: varsayilan olarak yasaklanmis" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers"; Name = "TransparentEnabled"; BadIf = "0"; Desc = "SRP seffafligi kapatilmis (DLL yuklemesini sinirlar)" },
 
-        # ═══ AppLocker (WDAC precursor - can block PowerShell scripts) ═══
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2\Script"; Name = "EnforcementMode"; BadIf = "1"; Desc = "AppLocker Script rules ENFORCED - may block PowerShell scripts" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2\Exe"; Name = "EnforcementMode"; BadIf = "1"; Desc = "AppLocker Exe rules ENFORCED - may block executables" },
+        # ═══ AppLocker ═══
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2\Script"; Name = "EnforcementMode"; BadIf = "1"; Desc = "AppLocker betik kurallari zorunlu modda" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2\Exe"; Name = "EnforcementMode"; BadIf = "1"; Desc = "AppLocker calistirilabilir dosya kurallari zorunlu modda" },
 
-        # ═══ WMI/CIM tampering (SecurityMonitor uses CIM for CPU/RAM/process data) ═══
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\Winmgmt"; Name = "Start"; BadIf = "4"; Desc = "WMI Service DISABLED - breaks CIM/WMI monitoring queries" },
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\iphlpsvc"; Name = "Start"; BadIf = "4"; Desc = "IP Helper Service DISABLED - breaks network monitoring" },
+        # ═══ WMI/CIM servisleri ═══
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\Winmgmt"; Name = "Start"; BadIf = "4"; Desc = "WMI Servisi kapatilmis (sistem izlemeyi etkiler)" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\iphlpsvc"; Name = "Start"; BadIf = "4"; Desc = "IP Yardimci Servisi kapatilmis (ag izlemeyi etkiler)" },
 
-        # ═══ Windows Notification suppression (hides SecurityMonitor tray/toasts) ═══
-        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications"; Name = "ToastEnabled"; BadIf = "0"; Desc = "Toast notifications DISABLED - hides SecurityMonitor alerts" },
-        @{ Path = "HKCU:\Software\Policies\Microsoft\Windows\Explorer"; Name = "DisableNotificationCenter"; BadIf = "1"; Desc = "Notification Center DISABLED - hides all alerts" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer"; Name = "DisableNotificationCenter"; BadIf = "1"; Desc = "Notification Center DISABLED (machine policy)" },
+        # ═══ Windows Bildirim ayarlari ═══
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications"; Name = "ToastEnabled"; BadIf = "0"; Desc = "Bildirimler (toast) kapatilmis" },
+        @{ Path = "HKCU:\Software\Policies\Microsoft\Windows\Explorer"; Name = "DisableNotificationCenter"; BadIf = "1"; Desc = "Bildirim Merkezi kapatilmis" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer"; Name = "DisableNotificationCenter"; BadIf = "1"; Desc = "Bildirim Merkezi kapatilmis (makine ilkesi)" },
 
-        # ═══ Remote access persistence (attacker maintaining access) ═══
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"; Name = "fDenyTSConnections"; BadIf = "0"; Desc = "Remote Desktop ENABLED at service level" },
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"; Name = "UserAuthentication"; BadIf = "0"; Desc = "RDP Network Level Authentication DISABLED - weaker security" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"; Name = "fAllowUnsolicited"; BadIf = "1"; Desc = "Unsolicited Remote Assistance ALLOWED" },
+        # ═══ Uzak erisim ayarlari ═══
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"; Name = "fDenyTSConnections"; BadIf = "0"; Desc = "Uzak Masaustu servis duzeyinde etkin" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"; Name = "UserAuthentication"; BadIf = "0"; Desc = "RDP Ag Duzeyi Kimlik Dogrulama kapatilmis" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"; Name = "fAllowUnsolicited"; BadIf = "1"; Desc = "Istenmeden Uzaktan Yardim izni verilmis" },
 
-        # ═══ Scheduled Tasks tampering (can kill SecurityMonitor periodically) ═══
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree"; Name = "(KeyExists)"; BadIf = "checkchildren"; Desc = "Scheduled task tree check" },
+        # ═══ Zamanlanmis Gorevler ═══
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree"; Name = "(KeyExists)"; BadIf = "checkchildren"; Desc = "Zamanlanmis gorev agaci kontrolu" },
 
-        # ═══ Windows Update disable (prevents security patches) ═══
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"; Name = "NoAutoUpdate"; BadIf = "1"; Desc = "Windows Auto-Update DISABLED via policy" },
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\wuauserv"; Name = "Start"; BadIf = "4"; Desc = "Windows Update Service DISABLED" },
+        # ═══ Windows Update ayarlari ═══
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"; Name = "NoAutoUpdate"; BadIf = "1"; Desc = "Windows Otomatik Guncelleme ilke ile kapatilmis" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\wuauserv"; Name = "Start"; BadIf = "4"; Desc = "Windows Update Servisi kapatilmis" },
 
-        # ═══ Credential stealing preparation ═══
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest"; Name = "UseLogonCredential"; BadIf = "1"; Desc = "WDigest cleartext passwords ENABLED - credential theft setup" },
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"; Name = "DisableRestrictedAdmin"; BadIf = "0"; Desc = "Restricted Admin mode manipulation detected" },
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"; Name = "RunAsPPL"; BadIf = "0"; Desc = "LSA Protection DISABLED - allows credential dumping" },
+        # ═══ Kimlik bilgisi ayarlari ═══
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest"; Name = "UseLogonCredential"; BadIf = "1"; Desc = "WDigest duz metin parola saklama etkin" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"; Name = "DisableRestrictedAdmin"; BadIf = "0"; Desc = "Kisitli Yonetici modu ayari degistirilmis" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"; Name = "RunAsPPL"; BadIf = "0"; Desc = "LSA Korumasi (PPL) kapatilmis" },
 
-        # ═══ Network security weakening ═══
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters"; Name = "SMB1"; BadIf = "1"; Desc = "SMBv1 ENABLED - vulnerable to EternalBlue/WannaCry" },
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\LanManServer\Parameters"; Name = "RequireSecuritySignature"; BadIf = "0"; Desc = "SMB signing NOT required - allows relay attacks" },
+        # ═══ Ag guvenligi ayarlari ═══
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters"; Name = "SMB1"; BadIf = "1"; Desc = "SMBv1 protokolu etkin (eski protokol)" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\LanManServer\Parameters"; Name = "RequireSecuritySignature"; BadIf = "0"; Desc = "SMB imzalama zorunlu degil" },
 
-        # ═══ Boot/startup hijacking ═══
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"; Name = "Userinit"; BadIf = "notdefault"; Desc = "Winlogon Userinit HIJACKED" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"; Name = "AppInit_DLLs"; BadIf = "exists_nonempty"; Desc = "AppInit_DLLs SET - DLL injection on every process" },
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"; Name = "LoadAppInit_DLLs"; BadIf = "1"; Desc = "AppInit_DLLs loading ENABLED - DLL injection active" },
+        # ═══ Baslangic ayarlari ═══
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"; Name = "Userinit"; BadIf = "notdefault"; Desc = "Winlogon Userinit degeri varsayilandan farkli" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"; Name = "AppInit_DLLs"; BadIf = "exists_nonempty"; Desc = "AppInit_DLLs degeri ayarlanmis" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"; Name = "LoadAppInit_DLLs"; BadIf = "1"; Desc = "AppInit_DLLs yuklemesi etkin" },
 
-        # ═══ Audit policy tampering ═══
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit"; Name = "ProcessCreationIncludeCmdLine_Enabled"; BadIf = "0"; Desc = "Process command-line auditing DISABLED - hides attacker activity" },
-        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Security"; Name = "MaxSize"; BadIf = "toosmall"; Desc = "Security event log size check" }
+        # ═══ Denetim ilkesi ayarlari ═══
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit"; Name = "ProcessCreationIncludeCmdLine_Enabled"; BadIf = "0"; Desc = "Islem komut satiri denetimi kapatilmis" },
+        @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Security"; Name = "MaxSize"; BadIf = "toosmall"; Desc = "Guvenlik olay kaydi boyut kontrolu" }
     )
 
     foreach ($check in $tamperChecks) {
@@ -3302,10 +3531,10 @@ function Watch-RegistryTampering {
                     $alertKey = "TAMPER:$($check.Path)"
                     if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
                         $script:TamperAlerted[$alertKey] = $true
-                        Send-Alert "REGISTRY TAMPERING" $check.Desc -Category "Registry Tampering" -ExtraDetails @{
+                        Send-Alert "Kayit Defteri Degisikligi" $check.Desc -Category "Registry Tampering" -ExtraDetails @{
                             "Registry Path" = $check.Path
-                            "Threat"        = $check.Desc
-                            "Action"        = "INVESTIGATE IMMEDIATELY - This key should NOT exist"
+                            "Bilgi"         = $check.Desc
+                            "Oneri"         = "Bu anahtarin varligini kontrol edin"
                         }
                     }
                 }
@@ -3319,12 +3548,12 @@ function Watch-RegistryTampering {
                     $alertKey = "TAMPER:$($check.Path)\$($check.Name)"
                     if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
                         $script:TamperAlerted[$alertKey] = $true
-                        Send-Alert "REGISTRY TAMPERING" "$($check.Desc) - Current: $val" -Category "Registry Tampering" -ExtraDetails @{
+                        Send-Alert "Kayit Defteri Degisikligi" "$($check.Desc) - Current: $val" -Category "Registry Tampering" -ExtraDetails @{
                             "Registry Path"  = $check.Path
                             "Value Name"     = $check.Name
                             "Current Value"  = "$val"
                             "Expected Value" = "explorer.exe"
-                            "Threat"         = $check.Desc
+                            "Bilgi"          = $check.Desc
                         }
                     }
                 }
@@ -3339,12 +3568,12 @@ function Watch-RegistryTampering {
                     $alertKey = "TAMPER:$($check.Path)\$($check.Name)"
                     if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
                         $script:TamperAlerted[$alertKey] = $true
-                        Send-Alert "REGISTRY TAMPERING" "$($check.Desc) - Current: $val" -Category "Registry Tampering" -ExtraDetails @{
+                        Send-Alert "Kayit Defteri Degisikligi" "$($check.Desc) - Current: $val" -Category "Registry Tampering" -ExtraDetails @{
                             "Registry Path"  = $check.Path
                             "Value Name"     = $check.Name
                             "Current Value"  = "$val"
                             "Expected"       = $defaultUserinit
-                            "Threat"         = "Startup hijack - malware injected into boot sequence"
+                            "Bilgi"          = "Baslangic programi varsayilandan farkli ayarlanmis"
                         }
                     }
                 }
@@ -3358,29 +3587,29 @@ function Watch-RegistryTampering {
                     $alertKey = "TAMPER:$($check.Path)\$($check.Name)"
                     if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
                         $script:TamperAlerted[$alertKey] = $true
-                        Send-Alert "REGISTRY TAMPERING" "$($check.Desc) - DLLs: $val" -Category "Registry Tampering" -ExtraDetails @{
+                        Send-Alert "Kayit Defteri Degisikligi" "$($check.Desc) - DLLs: $val" -Category "Registry Tampering" -ExtraDetails @{
                             "Registry Path"  = $check.Path
-                            "Injected DLLs"  = "$val"
-                            "Threat"         = "DLL injection into every process via AppInit_DLLs"
-                            "Action"         = "Clear AppInit_DLLs value and set LoadAppInit_DLLs to 0"
+                            "Yuklenen DLL'ler" = "$val"
+                            "Bilgi"          = "AppInit_DLLs uzerinden DLL yuklemesi yapilandirmasi"
+                            "Oneri"          = "AppInit_DLLs degerini temizleyip LoadAppInit_DLLs'i 0 yapabilirsiniz"
                         }
                     }
                 }
                 continue
             }
 
-            # Special case: Event log size too small (attacker shrinks to overwrite evidence)
+            # Special case: Event log size check
             if ($check.BadIf -eq "toosmall") {
                 $val = (& $getRegVal $check.Path $check.Name).Value
                 if ($val -and [int]$val -lt 1048576) {
                     $alertKey = "TAMPER:$($check.Path)\$($check.Name)"
                     if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
                         $script:TamperAlerted[$alertKey] = $true
-                        Send-Alert "REGISTRY TAMPERING" "Security event log MAX SIZE reduced to $([math]::Round($val/1024))KB" -Category "Registry Tampering" -ExtraDetails @{
+                        Send-Alert "Kayit Defteri Degisikligi" "Guvenlik olay kaydi boyutu: $([math]::Round($val/1024))KB" -Category "Registry Tampering" -ExtraDetails @{
                             "Registry Path"  = $check.Path
-                            "Current Size"   = "$([math]::Round($val/1024))KB"
-                            "Minimum Safe"   = "1024KB (1MB)"
-                            "Threat"         = "Small log size causes rapid overwrite - destroys forensic evidence"
+                            "Mevcut Boyut"   = "$([math]::Round($val/1024))KB"
+                            "Onerilen Min."  = "1024KB (1MB)"
+                            "Bilgi"          = "Kucuk kayit boyutu eski kayitlarin daha hizli silinmesine neden olur"
                         }
                     }
                 }
@@ -3410,10 +3639,10 @@ function Watch-RegistryTampering {
                         "Registry Path"  = $check.Path
                         "Value Name"     = $check.Name
                         "Current Value"  = "$val"
-                        "Threat"         = $check.Desc
+                        "Bilgi"          = $check.Desc
                     }
                     if ($check.BadIf -eq "exists") {
-                        $extraInfo["Action"] = "This value should NOT exist - delete to remediate"
+                        $extraInfo["Oneri"] = "Bu deger normalde bulunmaz - gerekirse silebilirsiniz"
                     } else {
                         # Value exists but has wrong value - provide safe default for restore
                         $safeDefaults = @{
@@ -3424,12 +3653,12 @@ function Watch-RegistryTampering {
                         $safeVal = $safeDefaults[$check.BadIf]
                         if ($safeVal) {
                             $extraInfo["Expected Value"] = $safeVal
-                            $extraInfo["Action"] = "Restore value to '$safeVal' to remediate"
+                            $extraInfo["Oneri"] = "Varsayilan degere ('$safeVal') geri dondurebilirsiniz"
                         } else {
-                            $extraInfo["Action"] = "INVESTIGATE AND REMEDIATE - This may indicate active compromise"
+                            $extraInfo["Oneri"] = "Bu ayari inceleyip gerekirse duzeltebilirsiniz"
                         }
                     }
-                    Send-Alert "REGISTRY TAMPERING" $check.Desc -Category "Registry Tampering" -ExtraDetails $extraInfo
+                    Send-Alert "Kayit Defteri Degisikligi" $check.Desc -Category "Registry Tampering" -ExtraDetails $extraInfo
                 }
             }
         } catch {}
@@ -3445,11 +3674,11 @@ function Watch-RegistryTampering {
                     $alertKey = "TAMPER:DisallowRun:$($p.Value)"
                     if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
                         $script:TamperAlerted[$alertKey] = $true
-                        Send-Alert "EXECUTABLE BLOCKED" "DisallowRun: $($p.Value) is BLOCKED from running" -Category "Registry Tampering" -ExtraDetails @{
-                            "Registry Path" = $disallowPath
-                            "Blocked Exe"   = $p.Value
-                            "Threat"        = "Security tool blocked via DisallowRun policy"
-                            "Action"        = "Remove this entry to restore access"
+                        Send-Alert "Program Engeli" "DisallowRun listesinde: $($p.Value)" -Category "Registry Tampering" -ExtraDetails @{
+                            "Registry Path"   = $disallowPath
+                            "Engellenen Dosya" = $p.Value
+                            "Bilgi"           = "DisallowRun ilkesi ile engellenmis"
+                            "Oneri"           = "Gerekirse bu girisi kaldirabilirsiniz"
                         }
                     }
                 }
@@ -3473,11 +3702,11 @@ function Watch-RegistryTampering {
                         $alertKey = "TAMPER:Exclusion:$ep\$($p.Name)"
                         if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
                             $script:TamperAlerted[$alertKey] = $true
-                            Send-Alert "DEFENDER EXCLUSION" "Suspicious exclusion: $($p.Name)" -Category "Registry Tampering" -ExtraDetails @{
-                                "Registry Path"   = $ep
-                                "Excluded Target"  = $p.Name
-                                "Threat"           = "Malware often adds Defender exclusions to hide itself"
-                                "Action"           = "Verify this exclusion is legitimate"
+                            Send-Alert "Defender Istisnasi" "Istisna kaydi: $($p.Name)" -Category "Registry Tampering" -ExtraDetails @{
+                                "Registry Path"    = $ep
+                                "Istisna Hedefi"   = $p.Name
+                                "Bilgi"            = "Defender tarama disinda birakilan bir oge"
+                                "Oneri"            = "Bu istisnanin bilerek eklendigini dogrulayin"
                             }
                         }
                     }
