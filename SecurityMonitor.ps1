@@ -1236,9 +1236,10 @@ function Show-Dashboard {
     $detailContent = $script:DetailContent
     $detailContent.Name = "detailContent"
     $detailContent.Location = New-Object System.Drawing.Point(15, 40)
-    $detailContent.Size = New-Object System.Drawing.Size(730, 130)
+    $detailContent.Size = New-Object System.Drawing.Size(730, 160)
     $detailContent.BackColor = $colCard
     $detailContent.AutoScroll = $true
+    $detailContent.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
     $detailBox.Controls.Add($detailContent)
 
     # IP Lookup button (hidden until connection alert selected)
@@ -1259,7 +1260,8 @@ function Show-Dashboard {
     $detailBox.Controls.Add($ipLookupBtn)
 
     # Open log button
-    $openLogBtn = New-Object System.Windows.Forms.Button
+    $script:OpenLogBtn = New-Object System.Windows.Forms.Button
+    $openLogBtn = $script:OpenLogBtn
     $openLogBtn.Text = "Open Alert Log"
     $openLogBtn.Location = New-Object System.Drawing.Point(310, 180)
     $openLogBtn.Size = New-Object System.Drawing.Size(160, 34)
@@ -1272,7 +1274,7 @@ function Show-Dashboard {
     $openLogBtn.Add_Click({ if ($this.Tag -and (Test-Path $this.Tag)) { Start-Process notepad.exe $this.Tag } })
     $detailBox.Controls.Add($openLogBtn)
 
-    # Click on alert row → populate detail panel
+    # Click on alert row → populate detail panel with auto-sizing
     $alertListView.Add_SelectedIndexChanged({
         try {
             $sel = $this.SelectedItems
@@ -1286,24 +1288,45 @@ function Show-Dashboard {
 
             $script:DetailContent.Controls.Clear()
             $dy = 0
+            $contentWidth = $script:DetailContent.Width - 20
+            $valWidth = [Math]::Max(200, $contentWidth - 155)
+            $valFont = New-Object System.Drawing.Font("Consolas", 9)
+            $g = $script:DetailContent.CreateGraphics()
+
             foreach ($key in $ad.Details.Keys) {
+                $valText = "$($ad.Details[$key])"
+
+                # Measure text height for auto-wrap
+                $measuredSize = $g.MeasureString($valText, $valFont, $valWidth)
+                $rowH = [Math]::Max(22, [Math]::Ceiling($measuredSize.Height) + 4)
+
                 $kl = New-Object System.Windows.Forms.Label
                 $kl.Text = "${key}:"
                 $kl.Location = New-Object System.Drawing.Point(0, $dy)
-                $kl.Size = New-Object System.Drawing.Size(140, 20)
+                $kl.Size = New-Object System.Drawing.Size(148, $rowH)
                 $kl.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
                 $kl.ForeColor = [System.Drawing.Color]::FromArgb(100, 160, 255)
                 $script:DetailContent.Controls.Add($kl)
 
                 $vl = New-Object System.Windows.Forms.Label
-                $vl.Text = "$($ad.Details[$key])"
-                $vl.Location = New-Object System.Drawing.Point(145, $dy)
-                $vl.Size = New-Object System.Drawing.Size(560, 20)
-                $vl.Font = New-Object System.Drawing.Font("Consolas", 9)
+                $vl.Text = $valText
+                $vl.Location = New-Object System.Drawing.Point(152, $dy)
+                $vl.Size = New-Object System.Drawing.Size($valWidth, $rowH)
+                $vl.Font = $valFont
                 $vl.ForeColor = [System.Drawing.Color]::White
                 $script:DetailContent.Controls.Add($vl)
-                $dy += 24
+
+                $dy += ($rowH + 4)
             }
+            $g.Dispose()
+
+            # Auto-resize DetailContent panel to fit all rows
+            $script:DetailContent.Height = [Math]::Max(80, $dy + 5)
+
+            # Reposition buttons below content
+            $btnY = $script:DetailContent.Bottom + 8
+            $script:IpLookupBtn.Location = New-Object System.Drawing.Point(15, $btnY)
+            $script:OpenLogBtn.Location = New-Object System.Drawing.Point(310, $btnY)
 
             # Show/hide IP lookup button
             if ($ad.RemoteIP) {
