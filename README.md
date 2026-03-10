@@ -2,6 +2,8 @@
 
 A PowerShell-based tool that performs continuous hardware and system-level security monitoring with **real-time Windows desktop notifications**. On first run, a GUI lets you choose exactly which types of changes you want to be notified about.
 
+![SecurityMonitor Dashboard](screenshots/dashboard.png)
+
 ## Features
 
 - **First-Run Setup GUI**: A graphical settings window lets you select which alert categories to receive as desktop notifications
