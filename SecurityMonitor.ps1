@@ -2178,6 +2178,60 @@ try {
     })
     $sy += 52
 
+    # -- Windows Notifications toggle --
+    $toastCard = New-Object System.Windows.Forms.Panel
+    $toastCard.Location = New-Object System.Drawing.Point(25, $sy)
+    $toastCard.Size = New-Object System.Drawing.Size(770, 48)
+    $toastCard.BackColor = $colCard
+    $toastCard.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $settingsPage.Controls.Add($toastCard)
+
+    $toastIcon = New-Object System.Windows.Forms.Label
+    $toastIcon.Text = "[N]"
+    $toastIcon.Location = New-Object System.Drawing.Point(10, 5)
+    $toastIcon.Size = New-Object System.Drawing.Size(40, 20)
+    $toastIcon.Font = New-Object System.Drawing.Font("Consolas", 9, [System.Drawing.FontStyle]::Bold)
+    $toastIcon.ForeColor = [System.Drawing.Color]::FromArgb(120, 190, 255)
+    $toastCard.Controls.Add($toastIcon)
+
+    $toastCb = New-Object System.Windows.Forms.CheckBox
+    $toastCb.Location = New-Object System.Drawing.Point(8, 24)
+    $toastCb.Size = New-Object System.Drawing.Size(18, 18)
+    $toastCb.ForeColor = $colTextMain
+    $toastCb.BackColor = $colCard
+    $propToast = $script:NotifyConfig.PSObject.Properties["EnableToastNotifications"]
+    $toastCb.Checked = if ($null -eq $propToast) { $true } else { $propToast.Value -eq $true }
+    $toastCard.Controls.Add($toastCb)
+
+    $toastLabel = New-Object System.Windows.Forms.Label
+    $toastLabel.Text = "Windows Desktop Notifications"
+    $toastLabel.Location = New-Object System.Drawing.Point(55, 5)
+    $toastLabel.Size = New-Object System.Drawing.Size(500, 20)
+    $toastLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
+    $toastLabel.ForeColor = $colTextMain
+    $toastCard.Controls.Add($toastLabel)
+
+    $toastDescLbl = New-Object System.Windows.Forms.Label
+    $toastDescLbl.Text = "Show Windows toast/balloon notifications for alerts. When off, alerts are still logged and visible in the Alerts tab."
+    $toastDescLbl.Location = New-Object System.Drawing.Point(55, 27)
+    $toastDescLbl.Size = New-Object System.Drawing.Size(700, 17)
+    $toastDescLbl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $toastDescLbl.ForeColor = $colTextDim
+    $toastCard.Controls.Add($toastDescLbl)
+
+    $toastCb.Tag = "EnableToastNotifications"
+    $toastCb.Add_CheckedChanged({
+        try {
+            $senderCb = $this
+            $cfgKey = $senderCb.Tag
+            $script:NotifyConfig | Add-Member -MemberType NoteProperty -Name $cfgKey -Value $senderCb.Checked -Force
+            if (-not $script:SuppressSettingsSave) {
+                $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $script:ConfigFilePath -Encoding UTF8
+            }
+        } catch {}
+    })
+    $sy += 52
+
     # Select All / Deselect All buttons
     $selAllBtn = New-Object System.Windows.Forms.Button
     $selAllBtn.Text = "Select All"
@@ -2981,11 +3035,16 @@ function Send-Alert {
         $script:RenderedAlertCount = [Math]::Max(0, $script:RenderedAlertCount - 1)
     }
 
-    $tipIcon = if ($severity -eq "CRIT") { "Error" } elseif ($severity -match "HIGH|MED") { "Warning" } else { "Info" }
-    if ($showThreat) {
-        Send-ToastNotification -Title "[$severity] $Title" -Message $Message -AlertData $alertData
-    } else {
-        Send-ToastNotification -Title $Title -Message $Message -AlertData $alertData
+    # Send toast/balloon only if enabled in settings
+    $toastEnabled = $script:NotifyConfig.PSObject.Properties["EnableToastNotifications"]
+    $showToast = if ($null -eq $toastEnabled) { $true } else { $toastEnabled.Value -eq $true }
+    if ($showToast) {
+        $tipIcon = if ($severity -eq "CRIT") { "Error" } elseif ($severity -match "HIGH|MED") { "Warning" } else { "Info" }
+        if ($showThreat) {
+            Send-ToastNotification -Title "[$severity] $Title" -Message $Message -AlertData $alertData
+        } else {
+            Send-ToastNotification -Title $Title -Message $Message -AlertData $alertData
+        }
     }
 
     if (-not $Silent) {
