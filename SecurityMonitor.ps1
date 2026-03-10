@@ -9,7 +9,7 @@
 .AUTHOR
     SecurityMonitor - Forensic Monitoring
 .VERSION
-    6.0.0
+    7.0.0
 #>
 
 param(
@@ -507,50 +507,99 @@ function Show-Dashboard {
     $statusTitle.ForeColor = $colAccent
     $statusPage.Controls.Add($statusTitle)
 
-    # Status indicator
-    $statusDot = New-Object System.Windows.Forms.Label
-    $statusDot.Text = "MONITORING ACTIVE"
-    $statusDot.Location = New-Object System.Drawing.Point(540, 22)
-    $statusDot.Size = New-Object System.Drawing.Size(250, 24)
-    $statusDot.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-    $statusDot.ForeColor = $colGreen
-    $statusDot.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+    # Pulsing status indicator
+    $script:StatusBright = $true
+    $statusDot = New-Object System.Windows.Forms.Panel
+    $statusDot.Location = New-Object System.Drawing.Point(540, 24)
+    $statusDot.Size = New-Object System.Drawing.Size(12, 12)
+    $statusDot.BackColor = $colGreen
     $statusDot.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
     $statusPage.Controls.Add($statusDot)
+    $script:StatusDotPanel = $statusDot
 
-    # Stat cards
+    $statusText = New-Object System.Windows.Forms.Label
+    $statusText.Text = "MONITORING ACTIVE"
+    $statusText.Location = New-Object System.Drawing.Point(558, 20)
+    $statusText.Size = New-Object System.Drawing.Size(230, 24)
+    $statusText.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $statusText.ForeColor = $colGreen
+    $statusText.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $statusText.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+    $statusPage.Controls.Add($statusText)
+
+    # Pulse timer for the dot
+    $pulseTimer = New-Object System.Windows.Forms.Timer
+    $pulseTimer.Interval = 800
+    $pulseTimer.Add_Tick({
+        try {
+            if ($script:StatusBright) {
+                $script:StatusDotPanel.BackColor = [System.Drawing.Color]::FromArgb(0, 100, 50)
+            } else {
+                $script:StatusDotPanel.BackColor = [System.Drawing.Color]::FromArgb(0, 200, 100)
+            }
+            $script:StatusBright = -not $script:StatusBright
+        } catch {}
+    })
+    $pulseTimer.Start()
+
+    # Stat cards with accent bar and icon
     function New-StatCard {
-        param($parent, $x, $y, $label, $valueVar)
+        param($parent, $x, $y, $label, $valueVar, $accentColor, $icon)
         $card = New-Object System.Windows.Forms.Panel
         $card.Location = New-Object System.Drawing.Point($x, $y)
         $card.Size = New-Object System.Drawing.Size(185, 90)
         $card.BackColor = $colCard
+        $card.Tag = "card"
         $parent.Controls.Add($card)
 
+        # Left accent bar
+        $accent = New-Object System.Windows.Forms.Panel
+        $accent.Location = New-Object System.Drawing.Point(0, 0)
+        $accent.Size = New-Object System.Drawing.Size(3, 90)
+        $accent.BackColor = $accentColor
+        $card.Controls.Add($accent)
+
+        # Icon
+        $iconLbl = New-Object System.Windows.Forms.Label
+        $iconLbl.Text = $icon
+        $iconLbl.Location = New-Object System.Drawing.Point(10, 28)
+        $iconLbl.Size = New-Object System.Drawing.Size(36, 36)
+        $iconLbl.Font = New-Object System.Drawing.Font("Segoe UI Symbol", 18)
+        $iconLbl.ForeColor = $accentColor
+        $card.Controls.Add($iconLbl)
+
         $lbl = New-Object System.Windows.Forms.Label
-        $lbl.Text = $label
-        $lbl.Location = New-Object System.Drawing.Point(12, 8)
-        $lbl.Size = New-Object System.Drawing.Size(165, 20)
-        $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+        $lbl.Text = $label.ToUpper()
+        $lbl.Location = New-Object System.Drawing.Point(48, 8)
+        $lbl.Size = New-Object System.Drawing.Size(130, 18)
+        $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 7.5, [System.Drawing.FontStyle]::Bold)
         $lbl.ForeColor = $colTextDim
         $card.Controls.Add($lbl)
 
         $val = New-Object System.Windows.Forms.Label
         $val.Text = "0"
         $val.Name = $valueVar
-        $val.Location = New-Object System.Drawing.Point(12, 30)
-        $val.Size = New-Object System.Drawing.Size(165, 50)
-        $val.Font = New-Object System.Drawing.Font("Segoe UI", 24, [System.Drawing.FontStyle]::Bold)
+        $val.Location = New-Object System.Drawing.Point(48, 28)
+        $val.Size = New-Object System.Drawing.Size(130, 50)
+        $val.Font = New-Object System.Drawing.Font("Segoe UI", 22, [System.Drawing.FontStyle]::Bold)
         $val.ForeColor = $colTextMain
         $card.Controls.Add($val)
+
+        # Hover effect
+        $hoverEnter = { $this.BackColor = [System.Drawing.Color]::FromArgb(42, 42, 62) }
+        $hoverLeave = { $this.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 48) }
+        $card.Add_MouseEnter($hoverEnter)
+        $card.Add_MouseLeave($hoverLeave)
+        foreach ($c in $card.Controls) { $c.Add_MouseEnter({ $this.Parent.BackColor = [System.Drawing.Color]::FromArgb(42, 42, 62) }); $c.Add_MouseLeave({ $this.Parent.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 48) }) }
+
         return $val
     }
 
-    $script:LblAlerts      = New-StatCard $statusPage 25  65  "Total Alerts"         "valAlerts"
-    $script:LblConnections = New-StatCard $statusPage 220 65  "Active Connections"   "valConns"
-    $script:LblProcesses   = New-StatCard $statusPage 415 65  "Tracked Processes"    "valProcs"
-    $script:LblUptime      = New-StatCard $statusPage 610 65  "Uptime"               "valUptime"
-    $script:LblUptime.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+    $script:LblAlerts      = New-StatCard $statusPage 25  65  "Total Alerts"       "valAlerts"   $colRed    "$([char]0x26A0)"
+    $script:LblConnections = New-StatCard $statusPage 220 65  "Connections"        "valConns"    $colAccent "$([char]0x1F310)"
+    $script:LblProcesses   = New-StatCard $statusPage 415 65  "Processes"          "valProcs"    $colGreen  "$([char]0x2699)"
+    $script:LblUptime      = New-StatCard $statusPage 610 65  "Uptime"             "valUptime"   $colOrange "$([char]0x23F1)"
+    $script:LblUptime.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Bold)
 
     # Computer info
     $infoBox = New-Object System.Windows.Forms.Panel
@@ -695,10 +744,67 @@ function Show-Dashboard {
         })
     }
 
+    # ── System Health Gauges ──
+    $healthLabel = New-Object System.Windows.Forms.Label
+    $healthLabel.Text = "System Health"
+    $healthLabel.Location = New-Object System.Drawing.Point(25, 260)
+    $healthLabel.Size = New-Object System.Drawing.Size(200, 22)
+    $healthLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $healthLabel.ForeColor = $colAccent
+    $statusPage.Controls.Add($healthLabel)
+
+    function New-GaugeBar {
+        param($parent, $x, $y, $label, $barName)
+        $gp = New-Object System.Windows.Forms.Panel
+        $gp.Location = New-Object System.Drawing.Point($x, $y)
+        $gp.Size = New-Object System.Drawing.Size(240, 44)
+        $gp.BackColor = $colCard
+        $parent.Controls.Add($gp)
+
+        $gl = New-Object System.Windows.Forms.Label
+        $gl.Text = $label
+        $gl.Location = New-Object System.Drawing.Point(10, 4)
+        $gl.Size = New-Object System.Drawing.Size(60, 16)
+        $gl.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+        $gl.ForeColor = $colTextDim
+        $gp.Controls.Add($gl)
+
+        $gv = New-Object System.Windows.Forms.Label
+        $gv.Name = "${barName}_val"
+        $gv.Text = "0%"
+        $gv.Location = New-Object System.Drawing.Point(180, 4)
+        $gv.Size = New-Object System.Drawing.Size(55, 16)
+        $gv.Font = New-Object System.Drawing.Font("Consolas", 8.5, [System.Drawing.FontStyle]::Bold)
+        $gv.ForeColor = $colTextMain
+        $gv.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+        $gp.Controls.Add($gv)
+
+        # Progress bar background
+        $barBg = New-Object System.Windows.Forms.Panel
+        $barBg.Location = New-Object System.Drawing.Point(10, 24)
+        $barBg.Size = New-Object System.Drawing.Size(220, 10)
+        $barBg.BackColor = [System.Drawing.Color]::FromArgb(20, 20, 35)
+        $gp.Controls.Add($barBg)
+
+        # Progress bar fill
+        $barFill = New-Object System.Windows.Forms.Panel
+        $barFill.Name = $barName
+        $barFill.Location = New-Object System.Drawing.Point(0, 0)
+        $barFill.Size = New-Object System.Drawing.Size(0, 10)
+        $barFill.BackColor = $colGreen
+        $barBg.Controls.Add($barFill)
+
+        return @{ Fill = $barFill; Label = $gv }
+    }
+
+    $script:CpuGauge  = New-GaugeBar $statusPage 25  285 "CPU"  "cpuBar"
+    $script:RamGauge  = New-GaugeBar $statusPage 275 285 "RAM"  "ramBar"
+    $script:DiskGauge = New-GaugeBar $statusPage 525 285 "DISK" "diskBar"
+
     # Recent alerts preview on status page
     $recentLabel = New-Object System.Windows.Forms.Label
     $recentLabel.Text = "Recent Alerts"
-    $recentLabel.Location = New-Object System.Drawing.Point(25, 260)
+    $recentLabel.Location = New-Object System.Drawing.Point(25, 340)
     $recentLabel.Size = New-Object System.Drawing.Size(300, 24)
     $recentLabel.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
     $recentLabel.ForeColor = $colOrange
@@ -707,14 +813,15 @@ function Show-Dashboard {
     $script:RecentList = New-Object System.Windows.Forms.ListView
     $recentList = $script:RecentList
     $recentList.Name = "recentList"
-    $recentList.Location = New-Object System.Drawing.Point(25, 288)
+    $recentList.Location = New-Object System.Drawing.Point(25, 368)
     $recentList.Size = New-Object System.Drawing.Size(770, 300)
     $recentList.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
     Style-ListView $recentList
-    [void]$recentList.Columns.Add("Time", 130)
-    [void]$recentList.Columns.Add("Category", 100)
-    [void]$recentList.Columns.Add("Title", 200)
-    [void]$recentList.Columns.Add("Message", 330)
+    [void]$recentList.Columns.Add("Time", 120)
+    [void]$recentList.Columns.Add("Sev", 50)
+    [void]$recentList.Columns.Add("Category", 90)
+    [void]$recentList.Columns.Add("Title", 180)
+    [void]$recentList.Columns.Add("Message", 310)
     $recentList.Add_DoubleClick({
         try {
             $sel = $this.SelectedItems
@@ -751,18 +858,167 @@ function Show-Dashboard {
     $alertCountLabel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
     $alertsPage.Controls.Add($alertCountLabel)
 
+    # ── Search/Filter bar ──
+    $filterPanel = New-Object System.Windows.Forms.Panel
+    $filterPanel.Location = New-Object System.Drawing.Point(25, 52)
+    $filterPanel.Size = New-Object System.Drawing.Size(770, 36)
+    $filterPanel.BackColor = [System.Drawing.Color]::FromArgb(22, 22, 36)
+    $filterPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $alertsPage.Controls.Add($filterPanel)
+
+    $script:SearchBox = New-Object System.Windows.Forms.TextBox
+    $script:SearchBox.Location = New-Object System.Drawing.Point(8, 6)
+    $script:SearchBox.Size = New-Object System.Drawing.Size(220, 24)
+    $script:SearchBox.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $script:SearchBox.BackColor = [System.Drawing.Color]::FromArgb(35, 35, 55)
+    $script:SearchBox.ForeColor = $colTextMain
+    $script:SearchBox.BorderStyle = "FixedSingle"
+    $script:SearchBox.Text = ""
+    $filterPanel.Controls.Add($script:SearchBox)
+
+    $searchPlaceholder = New-Object System.Windows.Forms.Label
+    $searchPlaceholder.Text = "Search alerts..."
+    $searchPlaceholder.Location = New-Object System.Drawing.Point(12, 9)
+    $searchPlaceholder.Size = New-Object System.Drawing.Size(150, 18)
+    $searchPlaceholder.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Italic)
+    $searchPlaceholder.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 100)
+    $searchPlaceholder.BackColor = [System.Drawing.Color]::FromArgb(35, 35, 55)
+    $filterPanel.Controls.Add($searchPlaceholder)
+    $searchPlaceholder.BringToFront()
+    $script:SearchBox.Add_TextChanged({
+        $searchPlaceholder.Visible = ($this.Text.Length -eq 0)
+        & $script:ApplyFilterFn
+    })
+    $script:SearchBox.Add_GotFocus({ $searchPlaceholder.Visible = $false })
+    $script:SearchBox.Add_LostFocus({ $searchPlaceholder.Visible = ($script:SearchBox.Text.Length -eq 0) })
+
+    $sevFilterLabel = New-Object System.Windows.Forms.Label
+    $sevFilterLabel.Text = "Severity:"
+    $sevFilterLabel.Location = New-Object System.Drawing.Point(240, 9)
+    $sevFilterLabel.Size = New-Object System.Drawing.Size(55, 18)
+    $sevFilterLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $sevFilterLabel.ForeColor = $colTextDim
+    $filterPanel.Controls.Add($sevFilterLabel)
+
+    $script:SevFilter = New-Object System.Windows.Forms.ComboBox
+    $script:SevFilter.Location = New-Object System.Drawing.Point(295, 5)
+    $script:SevFilter.Size = New-Object System.Drawing.Size(80, 24)
+    $script:SevFilter.DropDownStyle = "DropDownList"
+    $script:SevFilter.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $script:SevFilter.BackColor = [System.Drawing.Color]::FromArgb(35, 35, 55)
+    $script:SevFilter.ForeColor = $colTextMain
+    $script:SevFilter.FlatStyle = "Flat"
+    [void]$script:SevFilter.Items.AddRange(@("All", "CRIT", "HIGH", "MED", "LOW", "INFO"))
+    $script:SevFilter.SelectedIndex = 0
+    $script:SevFilter.Add_SelectedIndexChanged({ & $script:ApplyFilterFn })
+    $filterPanel.Controls.Add($script:SevFilter)
+
+    $catFilterLabel = New-Object System.Windows.Forms.Label
+    $catFilterLabel.Text = "Category:"
+    $catFilterLabel.Location = New-Object System.Drawing.Point(385, 9)
+    $catFilterLabel.Size = New-Object System.Drawing.Size(58, 18)
+    $catFilterLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $catFilterLabel.ForeColor = $colTextDim
+    $filterPanel.Controls.Add($catFilterLabel)
+
+    $script:CatFilter = New-Object System.Windows.Forms.ComboBox
+    $script:CatFilter.Location = New-Object System.Drawing.Point(443, 5)
+    $script:CatFilter.Size = New-Object System.Drawing.Size(110, 24)
+    $script:CatFilter.DropDownStyle = "DropDownList"
+    $script:CatFilter.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $script:CatFilter.BackColor = [System.Drawing.Color]::FromArgb(35, 35, 55)
+    $script:CatFilter.ForeColor = $colTextMain
+    $script:CatFilter.FlatStyle = "Flat"
+    [void]$script:CatFilter.Items.AddRange(@("All", "Connection", "Process", "Firmware", "Driver", "Service", "Registry", "Registry Tampering", "Security", "Listener", "Hosts", "RDP"))
+    $script:CatFilter.SelectedIndex = 0
+    $script:CatFilter.Add_SelectedIndexChanged({ & $script:ApplyFilterFn })
+    $filterPanel.Controls.Add($script:CatFilter)
+
+    # Export button
+    $exportBtn = New-Object System.Windows.Forms.Button
+    $exportBtn.Text = "Export"
+    $exportBtn.Location = New-Object System.Drawing.Point(570, 4)
+    $exportBtn.Size = New-Object System.Drawing.Size(70, 26)
+    $exportBtn.FlatStyle = "Flat"
+    $exportBtn.FlatAppearance.BorderSize = 1
+    $exportBtn.FlatAppearance.BorderColor = $colAccent
+    $exportBtn.BackColor = [System.Drawing.Color]::FromArgb(22, 22, 36)
+    $exportBtn.ForeColor = $colAccent
+    $exportBtn.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+    $exportBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $exportBtn.Add_Click({
+        try {
+            $sfd = New-Object System.Windows.Forms.SaveFileDialog
+            $sfd.Filter = "CSV (*.csv)|*.csv|JSON (*.json)|*.json"
+            $sfd.FileName = "SecurityMonitor_Alerts_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+            if ($sfd.ShowDialog() -eq "OK") {
+                $data = $script:AlertHistory
+                if ($sfd.FileName -match '\.json$') {
+                    $data | ConvertTo-Json -Depth 5 | Set-Content -Path $sfd.FileName -Encoding UTF8
+                } else {
+                    $lines = @("Timestamp,Severity,Category,Title,Message,RemoteIP")
+                    foreach ($a in $data) {
+                        $lines += "`"$($a.Timestamp)`",`"$($a.Severity)`",`"$($a.Category)`",`"$($a.Title -replace '"','""')`",`"$($a.Message -replace '"','""')`",`"$($a.RemoteIP)`""
+                    }
+                    $lines | Set-Content -Path $sfd.FileName -Encoding UTF8
+                }
+                [System.Windows.Forms.MessageBox]::Show("Exported $($data.Count) alerts to:`n$($sfd.FileName)", "Export Complete", "OK", "Information")
+            }
+        } catch {}
+    })
+    $filterPanel.Controls.Add($exportBtn)
+
+    # Filter logic
+    $script:ApplyFilterFn = {
+        try {
+            $keyword = $script:SearchBox.Text.Trim().ToLower()
+            $sevSel = $script:SevFilter.SelectedItem
+            $catSel = $script:CatFilter.SelectedItem
+            $script:AlertListView.Items.Clear()
+            $total = $script:AlertHistory.Count
+            $shown = 0
+            for ($i = $total - 1; $i -ge 0; $i--) {
+                $a = $script:AlertHistory[$i]
+                if ($sevSel -ne "All" -and $a.Severity -ne $sevSel) { continue }
+                if ($catSel -ne "All" -and $a.Category -ne $catSel) { continue }
+                if ($keyword.Length -gt 0) {
+                    $match = ($a.Title.ToLower().Contains($keyword)) -or ($a.Message.ToLower().Contains($keyword)) -or ($a.Category.ToLower().Contains($keyword))
+                    if (-not $match) { continue }
+                }
+                $itemColor = switch ($a.Severity) {
+                    "CRIT" { [System.Drawing.Color]::FromArgb(255, 60, 60) }
+                    "HIGH" { [System.Drawing.Color]::FromArgb(255, 160, 40) }
+                    "MED"  { [System.Drawing.Color]::FromArgb(255, 220, 50) }
+                    "LOW"  { [System.Drawing.Color]::White }
+                    default { [System.Drawing.Color]::FromArgb(140, 140, 160) }
+                }
+                $item = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
+                [void]$item.SubItems.Add($a.Severity)
+                [void]$item.SubItems.Add($a.Category)
+                [void]$item.SubItems.Add($a.Title)
+                [void]$item.SubItems.Add($a.Message)
+                $item.Tag = $i
+                $item.ForeColor = $itemColor
+                [void]$script:AlertListView.Items.Add($item)
+                $shown++
+            }
+            $script:AlertCountLabel.Text = "$shown / $total alerts"
+        } catch {}
+    }
+
     # Full alert list
     $script:AlertListView = New-Object System.Windows.Forms.ListView
     $alertListView = $script:AlertListView
     $alertListView.Name = "alertListView"
-    $alertListView.Location = New-Object System.Drawing.Point(25, 58)
-    $alertListView.Size = New-Object System.Drawing.Size(770, 290)
+    $alertListView.Location = New-Object System.Drawing.Point(25, 92)
+    $alertListView.Size = New-Object System.Drawing.Size(770, 255)
     $alertListView.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
     Style-ListView $alertListView
-    [void]$alertListView.Columns.Add("Time", 130)
-    [void]$alertListView.Columns.Add("Category", 100)
-    [void]$alertListView.Columns.Add("Title", 200)
-    [void]$alertListView.Columns.Add("Message", 330)
+    [void]$alertListView.Columns.Add("Time", 120)
+    [void]$alertListView.Columns.Add("Sev", 50)
+    [void]$alertListView.Columns.Add("Category", 90)
+    [void]$alertListView.Columns.Add("Title", 180)
+    [void]$alertListView.Columns.Add("Message", 310)
     $alertsPage.Controls.Add($alertListView)
 
     # Detail panel below the list
@@ -883,13 +1139,16 @@ function Show-Dashboard {
 
             for ($i = $script:RenderedAlertCount; $i -lt $total; $i++) {
                 $a = $script:AlertHistory[$i]
-                $itemColor = [System.Drawing.Color]::White
-                if ($a.Category -eq "Connection") { $itemColor = [System.Drawing.Color]::FromArgb(255, 160, 40) }
-                elseif ($a.Category -eq "Process")  { $itemColor = [System.Drawing.Color]::FromArgb(220, 50, 60) }
-                elseif ($a.Category -eq "Firmware") { $itemColor = [System.Drawing.Color]::FromArgb(255, 80, 80) }
-                elseif ($a.Category -eq "Registry Tampering") { $itemColor = [System.Drawing.Color]::FromArgb(255, 0, 0) }
+                $itemColor = switch ($a.Severity) {
+                    "CRIT" { [System.Drawing.Color]::FromArgb(255, 60, 60) }
+                    "HIGH" { [System.Drawing.Color]::FromArgb(255, 160, 40) }
+                    "MED"  { [System.Drawing.Color]::FromArgb(255, 220, 50) }
+                    "LOW"  { [System.Drawing.Color]::White }
+                    default { [System.Drawing.Color]::FromArgb(140, 140, 160) }
+                }
 
                 $item = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
+                [void]$item.SubItems.Add($a.Severity)
                 [void]$item.SubItems.Add($a.Category)
                 [void]$item.SubItems.Add($a.Title)
                 [void]$item.SubItems.Add($a.Message)
@@ -898,6 +1157,7 @@ function Show-Dashboard {
                 [void]$script:AlertListView.Items.Insert(0, $item)
 
                 $r = New-Object System.Windows.Forms.ListViewItem($a.Timestamp)
+                [void]$r.SubItems.Add($a.Severity)
                 [void]$r.SubItems.Add($a.Category)
                 [void]$r.SubItems.Add($a.Title)
                 [void]$r.SubItems.Add($a.Message)
@@ -1166,6 +1426,29 @@ function Show-Dashboard {
                 $up = (Get-Date) - $script:StartTime
                 $script:LblUptime.Text = "{0:D2}h {1:D2}m" -f [int]$up.TotalHours, $up.Minutes
                 & $script:UpdateAlertsListFn
+
+                # Update CPU/RAM/Disk gauges
+                try {
+                    $cpuLoad = [math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average, 0)
+                    $os = Get-CimInstance Win32_OperatingSystem
+                    $ramUsed = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 0)
+                    $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
+                    $diskUsed = [math]::Round((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100, 0)
+
+                    $maxW = 220
+                    $colGreen  = [System.Drawing.Color]::FromArgb(0, 200, 100)
+                    $colYellow = [System.Drawing.Color]::FromArgb(255, 220, 50)
+                    $colRed    = [System.Drawing.Color]::FromArgb(255, 60, 60)
+
+                    foreach ($gauge in @(@{G=$script:CpuGauge; V=$cpuLoad}, @{G=$script:RamGauge; V=$ramUsed}, @{G=$script:DiskGauge; V=$diskUsed})) {
+                        $pct = [math]::Max(0, [math]::Min(100, $gauge.V))
+                        $gauge.G.Label.Text = "$pct%"
+                        $gauge.G.Fill.Width = [math]::Round($maxW * $pct / 100)
+                        if ($pct -ge 90) { $gauge.G.Fill.BackColor = $colRed }
+                        elseif ($pct -ge 70) { $gauge.G.Fill.BackColor = $colYellow }
+                        else { $gauge.G.Fill.BackColor = $colGreen }
+                    }
+                } catch {}
             }
         } catch {}
     })
@@ -1412,6 +1695,20 @@ function Send-ToastNotification {
     }
 }
 
+function Get-AlertSeverity {
+    param([string]$Title, [string]$Category)
+    if ($Category -eq "Registry Tampering") { return "CRIT" }
+    if ($Title -match "FIRMWARE.*(DELETED|MODIFIED)") { return "CRIT" }
+    if ($Title -match "REGISTRY TAMPERING|EXECUTABLE BLOCKED|DEFENDER EXCLUSION") { return "CRIT" }
+    if ($Category -eq "Connection" -or $Title -match "UNKNOWN CONNECTION") { return "HIGH" }
+    if ($Category -eq "Process" -or $Title -match "UNSIGNED PROCESS") { return "HIGH" }
+    if ($Title -match "REMOTE LOGON|FAILED LOGON|NEW USER") { return "HIGH" }
+    if ($Category -match "Driver|Service|Security") { return "MED" }
+    if ($Title -match "NEW_DRIVER|NEW_SERVICE|SECURITY EVENT") { return "MED" }
+    if ($Category -match "Listener|Hosts|Registry|RDP") { return "LOW" }
+    return "INFO"
+}
+
 function Send-Alert {
     param(
         [string]$Title,
@@ -1423,25 +1720,27 @@ function Send-Alert {
     $script:AlertCount++
     Write-Log "$Title - $Message" -Level "ALERT"
 
+    $severity = Get-AlertSeverity -Title $Title -Category $Category
+
     # Build alert data for GUI
     $alertData = @{
         Title     = $Title
         Message   = $Message
         Category  = $Category
+        Severity  = $severity
         RemoteIP  = $RemoteIP
         Timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
         Details   = @{
+            "Severity"    = $severity
             "Alert Type"  = $Title
             "Description" = $Message
             "Computer"    = $env:COMPUTERNAME
             "User"        = $env:USERNAME
         }
     }
-    # Merge extra details
     foreach ($key in $ExtraDetails.Keys) {
         $alertData.Details[$key] = $ExtraDetails[$key]
     }
-    # Add IP-specific details for connection alerts
     if ($Category -eq "Connection" -and $RemoteIP) {
         $alertData.Details["Remote IP"]   = $RemoteIP
         $alertData.Details["IP Lookup"]   = "https://ipinfo.io/$RemoteIP"
@@ -1449,20 +1748,30 @@ function Send-Alert {
 
     [void]$script:AlertHistory.Add($alertData)
 
-    # Only send toast notification if this category is enabled in user preferences
+    # Cap alert history at 10000
+    while ($script:AlertHistory.Count -gt 10000) {
+        $script:AlertHistory.RemoveAt(0)
+        $script:RenderedAlertCount = [Math]::Max(0, $script:RenderedAlertCount - 1)
+    }
+
     $shouldNotify = $true
     if ($Category -ne "" -and -not (Test-NotifyEnabled -Category $Category)) {
         $shouldNotify = $false
     }
 
     if ($shouldNotify) {
-        Send-ToastNotification -Title $Title -Message $Message -AlertData $alertData
+        $tipIcon = if ($severity -eq "CRIT") { "Error" } elseif ($severity -match "HIGH|MED") { "Warning" } else { "Info" }
+        Send-ToastNotification -Title "[$severity] $Title" -Message $Message -AlertData $alertData
     }
 
     if (-not $Silent) {
-        Write-Alert "$Title - $Message"
+        Write-Alert "[$severity] $Title - $Message"
         if ($shouldNotify) {
-            try { [System.Console]::Beep(1000, 300); [System.Console]::Beep(1500, 300) } catch {}
+            try {
+                if ($severity -eq "CRIT") { [System.Console]::Beep(800, 200); [System.Console]::Beep(1200, 200); [System.Console]::Beep(1600, 300) }
+                elseif ($severity -eq "HIGH") { [System.Console]::Beep(1000, 300); [System.Console]::Beep(1500, 300) }
+                elseif ($severity -eq "MED") { [System.Console]::Beep(1200, 200) }
+            } catch {}
         }
     }
 }
