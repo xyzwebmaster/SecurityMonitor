@@ -4033,7 +4033,7 @@ if (-not `$success) { throw "No adapter could be configured" }
                 $sec6 = if ($dnsInfo) { $dnsInfo.Secondary6 } else { '' }
                 $elevatedScript = @"
 # Enable global DoH support
-Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableAutoDoh' -Value 2 -Type DWord -ErrorAction Stop
+Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableAutoDoh' -Value 2 -Type DWord -ErrorAction Stop
 
 # Register DoH server templates with AutoUpgrade for all provider addresses (IPv4 + IPv6)
 `$dohServers = @('$pri','$sec','$pri6','$sec6')
@@ -4058,12 +4058,10 @@ foreach (`$adapter in `$adapters) {
         if (-not `$srv) { continue }
         `$srvPath = "`$basePath\`$srv"
         New-Item -Path `$srvPath -Force -ErrorAction SilentlyContinue | Out-Null
-        Set-ItemProperty -Path `$srvPath -Name 'DohFlags' -Value 1 -Type QWord -ErrorAction SilentlyContinue
+        Set-ItemProperty -LiteralPath `$srvPath -Name 'DohFlags' -Value 2 -Type QWord -Force -ErrorAction SilentlyContinue
     }
 }
 
-# Restart DNS Client to apply changes
-Restart-Service -Name Dnscache -Force -ErrorAction SilentlyContinue
 ipconfig /flushdns | Out-Null
 "@
             } else {
@@ -4073,7 +4071,7 @@ ipconfig /flushdns | Out-Null
                 $sec6 = if ($dnsInfo) { $dnsInfo.Secondary6 } else { '' }
                 $elevatedScript = @"
 # Disable global DoH
-Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableAutoDoh' -Value 0 -Type DWord -ErrorAction Stop
+Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableAutoDoh' -Value 0 -Type DWord -ErrorAction Stop
 
 # Reset AutoUpgrade on DoH server entries
 `$dohServers = @('$pri','$sec','$pri6','$sec6')
@@ -4089,10 +4087,9 @@ foreach (`$srv in `$dohServers) {
 foreach (`$adapter in `$adapters) {
     `$guid = `$adapter.InterfaceGuid
     `$basePath = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\`$guid\DohInterfaceSettings"
-    Remove-Item -Path `$basePath -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath `$basePath -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-Restart-Service -Name Dnscache -Force -ErrorAction SilentlyContinue
 ipconfig /flushdns | Out-Null
 "@
             }
@@ -4171,12 +4168,19 @@ ipconfig /flushdns | Out-Null
                 $results['FW_BlockDevices'] = ($null -ne $devRule) -or $llmnrDisabled -or $ssdpDisabled
             } catch {}
             try {
-                $regVal = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableAutoDoh' -ErrorAction SilentlyContinue
+                $regVal = Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableAutoDoh' -ErrorAction SilentlyContinue
                 $globalDoH = ($null -ne $regVal -and $regVal.EnableAutoDoh -eq 2)
                 $adapterDoH = $false
                 if ($globalDoH) {
-                    $dohEntries = Get-DnsClientDohServerAddress -ErrorAction SilentlyContinue | Where-Object { $_.AutoUpgrade -eq $true }
-                    $adapterDoH = ($null -ne $dohEntries -and @($dohEntries).Count -gt 0)
+                    $physAdapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false }
+                    foreach ($pa in $physAdapters) {
+                        $dohBase = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($pa.InterfaceGuid)\DohInterfaceSettings\Doh"
+                        $dohKeys = Get-ChildItem -LiteralPath $dohBase -ErrorAction SilentlyContinue
+                        if ($dohKeys -and @($dohKeys).Count -gt 0) {
+                            $adapterDoH = $true
+                            break
+                        }
+                    }
                 }
                 $results['DNS_DoH'] = ($globalDoH -and $adapterDoH)
             } catch { $results['DNS_DoH'] = $false }
