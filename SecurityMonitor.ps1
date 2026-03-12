@@ -3862,12 +3862,12 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_TCP' -ErrorAction S
         'AdGuard'   = "AdGuard (94.140.14.14)"
     }
     $script:DnsProviderReverseMap = @{
-        "None (System Default)"      = @{ Name = 'None';       Primary = $null; Secondary = $null }
-        "Cloudflare (1.1.1.1)"       = @{ Name = 'Cloudflare'; Primary = '1.1.1.1'; Secondary = '1.0.0.1' }
-        "Quad9 (9.9.9.9)"            = @{ Name = 'Quad9';      Primary = '9.9.9.9'; Secondary = '149.112.112.112' }
-        "Google (8.8.8.8)"           = @{ Name = 'Google';      Primary = '8.8.8.8'; Secondary = '8.8.4.4' }
-        "OpenDNS (208.67.222.222)"   = @{ Name = 'OpenDNS';    Primary = '208.67.222.222'; Secondary = '208.67.220.220' }
-        "AdGuard (94.140.14.14)"     = @{ Name = 'AdGuard';    Primary = '94.140.14.14'; Secondary = '94.140.15.15' }
+        "None (System Default)"      = @{ Name = 'None';       Primary = $null; Secondary = $null; Primary6 = $null; Secondary6 = $null; DohTemplate = $null }
+        "Cloudflare (1.1.1.1)"       = @{ Name = 'Cloudflare'; Primary = '1.1.1.1'; Secondary = '1.0.0.1'; Primary6 = '2606:4700:4700::1111'; Secondary6 = '2606:4700:4700::1001'; DohTemplate = 'https://cloudflare-dns.com/dns-query' }
+        "Quad9 (9.9.9.9)"            = @{ Name = 'Quad9';      Primary = '9.9.9.9'; Secondary = '149.112.112.112'; Primary6 = '2620:fe::fe'; Secondary6 = '2620:fe::9'; DohTemplate = 'https://dns.quad9.net/dns-query' }
+        "Google (8.8.8.8)"           = @{ Name = 'Google';      Primary = '8.8.8.8'; Secondary = '8.8.4.4'; Primary6 = '2001:4860:4860::8888'; Secondary6 = '2001:4860:4860::8844'; DohTemplate = 'https://dns.google/dns-query' }
+        "OpenDNS (208.67.222.222)"   = @{ Name = 'OpenDNS';    Primary = '208.67.222.222'; Secondary = '208.67.220.220'; Primary6 = '2620:119:35::35'; Secondary6 = '2620:119:53::53'; DohTemplate = 'https://doh.opendns.com/dns-query' }
+        "AdGuard (94.140.14.14)"     = @{ Name = 'AdGuard';    Primary = '94.140.14.14'; Secondary = '94.140.15.15'; Primary6 = '2a10:50c0::ad1:ff'; Secondary6 = '2a10:50c0::ad2:ff'; DohTemplate = 'https://dns.adguard-dns.com/dns-query' }
     }
     # Load current provider from config (suppress event handler during initial load)
     $currentProvider = 'None'
@@ -3907,7 +3907,7 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_TCP' -ErrorAction S
             if ($dot) { $dot.BackColor = [System.Drawing.Color]::FromArgb(255, 200, 60) }
 
             if ($provName -eq 'None') {
-                # Reset DNS to DHCP
+                # Reset DNS to DHCP (both IPv4 and IPv6)
                 $elevatedScript = @'
 Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false } | ForEach-Object {
     Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
@@ -3916,12 +3916,14 @@ Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false } 
             } else {
                 $pri = $provInfo.Primary
                 $sec = $provInfo.Secondary
+                $pri6 = $provInfo.Primary6
+                $sec6 = $provInfo.Secondary6
                 $elevatedScript = @"
 `$adapters = Get-NetAdapter | Where-Object { `$_.Status -eq 'Up' -and `$_.Virtual -eq `$false }
 `$success = `$false
 foreach (`$adapter in `$adapters) {
     try {
-        Set-DnsClientServerAddress -InterfaceIndex `$adapter.ifIndex -ServerAddresses @('$pri','$sec') -ErrorAction Stop
+        Set-DnsClientServerAddress -InterfaceIndex `$adapter.ifIndex -ServerAddresses @('$pri','$sec','$pri6','$sec6') -ErrorAction Stop
         `$success = `$true
     } catch {}
 }
@@ -4012,18 +4014,87 @@ if (-not `$success) { throw "No adapter could be configured" }
     $dohCb.Add_CheckedChanged({
         try {
             if ($script:SuppressSettingsSave) { return }
+            if ($script:FWPendingOps.ContainsKey('DNS_DoH') -and $script:FWPendingOps['DNS_DoH']) { return }
+            $script:FWPendingOps['DNS_DoH'] = $true
+
             $isChecked = $this.Checked
             $dot = $script:FWStatusDots['DNS_DoH']
             if ($dot) { $dot.BackColor = [System.Drawing.Color]::FromArgb(255, 200, 60) }
 
+            # Get current DNS provider info for DoH template and server addresses
+            $selectedDns = $script:DnsProviderCombo.SelectedItem.ToString()
+            $dnsInfo = $script:DnsProviderReverseMap[$selectedDns]
+
             if ($isChecked) {
-                $elevatedScript = @'
+                $dohTemplate = if ($dnsInfo -and $dnsInfo.DohTemplate) { $dnsInfo.DohTemplate } else { '' }
+                $pri = if ($dnsInfo) { $dnsInfo.Primary } else { '' }
+                $sec = if ($dnsInfo) { $dnsInfo.Secondary } else { '' }
+                $pri6 = if ($dnsInfo) { $dnsInfo.Primary6 } else { '' }
+                $sec6 = if ($dnsInfo) { $dnsInfo.Secondary6 } else { '' }
+                $elevatedScript = @"
+# Enable global DoH support
 Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableAutoDoh' -Value 2 -Type DWord -ErrorAction Stop
-'@
+
+# Register DoH server templates with AutoUpgrade for all provider addresses (IPv4 + IPv6)
+`$dohServers = @('$pri','$sec','$pri6','$sec6')
+foreach (`$srv in `$dohServers) {
+    if (-not `$srv) { continue }
+    try {
+        `$existing = Get-DnsClientDohServerAddress -ServerAddress `$srv -ErrorAction SilentlyContinue
+        if (`$existing) {
+            Set-DnsClientDohServerAddress -ServerAddress `$srv -DohTemplate '$dohTemplate' -AllowFallbackToUdp `$false -AutoUpgrade `$true -ErrorAction Stop
+        } else {
+            Add-DnsClientDohServerAddress -ServerAddress `$srv -DohTemplate '$dohTemplate' -AllowFallbackToUdp `$false -AutoUpgrade `$true -ErrorAction Stop
+        }
+    } catch {}
+}
+
+# Configure per-adapter DoH via registry for each active physical adapter
+`$adapters = Get-NetAdapter | Where-Object { `$_.Status -eq 'Up' -and `$_.Virtual -eq `$false }
+foreach (`$adapter in `$adapters) {
+    `$guid = `$adapter.InterfaceGuid
+    `$basePath = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\`$guid\DohInterfaceSettings\Doh"
+    foreach (`$srv in `$dohServers) {
+        if (-not `$srv) { continue }
+        `$srvPath = "`$basePath\`$srv"
+        New-Item -Path `$srvPath -Force -ErrorAction SilentlyContinue | Out-Null
+        Set-ItemProperty -Path `$srvPath -Name 'DohFlags' -Value 1 -Type QWord -ErrorAction SilentlyContinue
+    }
+}
+
+# Restart DNS Client to apply changes
+Restart-Service -Name Dnscache -Force -ErrorAction SilentlyContinue
+ipconfig /flushdns | Out-Null
+"@
             } else {
-                $elevatedScript = @'
+                $pri = if ($dnsInfo) { $dnsInfo.Primary } else { '' }
+                $sec = if ($dnsInfo) { $dnsInfo.Secondary } else { '' }
+                $pri6 = if ($dnsInfo) { $dnsInfo.Primary6 } else { '' }
+                $sec6 = if ($dnsInfo) { $dnsInfo.Secondary6 } else { '' }
+                $elevatedScript = @"
+# Disable global DoH
 Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableAutoDoh' -Value 0 -Type DWord -ErrorAction Stop
-'@
+
+# Reset AutoUpgrade on DoH server entries
+`$dohServers = @('$pri','$sec','$pri6','$sec6')
+foreach (`$srv in `$dohServers) {
+    if (-not `$srv) { continue }
+    try {
+        Set-DnsClientDohServerAddress -ServerAddress `$srv -AllowFallbackToUdp `$false -AutoUpgrade `$false -ErrorAction SilentlyContinue
+    } catch {}
+}
+
+# Remove per-adapter DoH registry entries
+`$adapters = Get-NetAdapter | Where-Object { `$_.Status -eq 'Up' -and `$_.Virtual -eq `$false }
+foreach (`$adapter in `$adapters) {
+    `$guid = `$adapter.InterfaceGuid
+    `$basePath = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\`$guid\DohInterfaceSettings"
+    Remove-Item -Path `$basePath -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Restart-Service -Name Dnscache -Force -ErrorAction SilentlyContinue
+ipconfig /flushdns | Out-Null
+"@
             }
 
             $capturedChecked = $isChecked
@@ -4101,13 +4172,20 @@ Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Paramet
             } catch {}
             try {
                 $regVal = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableAutoDoh' -ErrorAction SilentlyContinue
-                $results['DNS_DoH'] = ($null -ne $regVal -and $regVal.EnableAutoDoh -eq 2)
+                $globalDoH = ($null -ne $regVal -and $regVal.EnableAutoDoh -eq 2)
+                $adapterDoH = $false
+                if ($globalDoH) {
+                    $dohEntries = Get-DnsClientDohServerAddress -ErrorAction SilentlyContinue | Where-Object { $_.AutoUpgrade -eq $true }
+                    $adapterDoH = ($null -ne $dohEntries -and @($dohEntries).Count -gt 0)
+                }
+                $results['DNS_DoH'] = ($globalDoH -and $adapterDoH)
             } catch { $results['DNS_DoH'] = $false }
             try {
                 $physicalAdapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false }
                 $dnsServers = @()
                 foreach ($pa in $physicalAdapters) {
                     $dnsServers += (Get-DnsClientServerAddress -InterfaceIndex $pa.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses
+                    $dnsServers += (Get-DnsClientServerAddress -InterfaceIndex $pa.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue).ServerAddresses
                 }
                 $results['DNS_Provider'] = if ($dnsServers -contains '1.1.1.1') { 'Cloudflare' }
                     elseif ($dnsServers -contains '9.9.9.9') { 'Quad9' }
