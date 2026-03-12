@@ -3288,7 +3288,8 @@ try {
                     $this.Dispose()
                     $result = "ERROR: No result file"
                     if (Test-Path $capturedResultFile) {
-                        $result = (Get-Content $capturedResultFile -Raw -ErrorAction SilentlyContinue).Trim()
+                        $rawContent = Get-Content $capturedResultFile -Raw -ErrorAction SilentlyContinue
+                        if ($rawContent) { $result = $rawContent.Trim() }
                         Remove-Item $capturedResultFile -Force -ErrorAction SilentlyContinue
                     }
                     if (Test-Path $capturedScriptFile) { Remove-Item $capturedScriptFile -Force -ErrorAction SilentlyContinue }
@@ -3297,6 +3298,7 @@ try {
             } catch {
                 $this.Stop()
                 $this.Dispose()
+                try { & $capturedOnComplete "ERROR: Poll timer exception: $($_.Exception.Message)" } catch {}
             }
         }.GetNewClosure())
         $pollTimer.Start()
@@ -3867,15 +3869,18 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_TCP' -ErrorAction S
         "OpenDNS (208.67.222.222)"   = @{ Name = 'OpenDNS';    Primary = '208.67.222.222'; Secondary = '208.67.220.220' }
         "AdGuard (94.140.14.14)"     = @{ Name = 'AdGuard';    Primary = '94.140.14.14'; Secondary = '94.140.15.15' }
     }
-    # Load current provider from config
+    # Load current provider from config (suppress event handler during initial load)
     $currentProvider = 'None'
     $propDNS = $script:NotifyConfig.PSObject.Properties['DNS_Provider']
     if ($propDNS) { $currentProvider = $propDNS.Value }
-    if ($script:DnsProviderConfigMap.ContainsKey($currentProvider)) {
-        $script:DnsProviderCombo.SelectedItem = $script:DnsProviderConfigMap[$currentProvider]
-    } else {
-        $script:DnsProviderCombo.SelectedIndex = 0
-    }
+    try {
+        $script:SuppressSettingsSave = $true
+        if ($script:DnsProviderConfigMap.ContainsKey($currentProvider)) {
+            $script:DnsProviderCombo.SelectedItem = $script:DnsProviderConfigMap[$currentProvider]
+        } else {
+            $script:DnsProviderCombo.SelectedIndex = 0
+        }
+    } finally { $script:SuppressSettingsSave = $false }
     $dnsProviderCard.Controls.Add($script:DnsProviderCombo)
 
     # DNS Provider status dot
@@ -3889,9 +3894,14 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_TCP' -ErrorAction S
     $script:DnsProviderCombo.Add_SelectedIndexChanged({
         try {
             if ($script:SuppressSettingsSave) { return }
+
+            # Pending operation guard - prevent concurrent DNS changes
+            if ($script:FWPendingOps.ContainsKey('DNS_Provider') -and $script:FWPendingOps['DNS_Provider']) { return }
+            $script:FWPendingOps['DNS_Provider'] = $true
+
             $selectedItem = $script:DnsProviderCombo.SelectedItem.ToString()
             $provInfo = $script:DnsProviderReverseMap[$selectedItem]
-            if (-not $provInfo) { return }
+            if (-not $provInfo) { $script:FWPendingOps['DNS_Provider'] = $false; return }
             $provName = $provInfo.Name
             $dot = $script:FWStatusDots['DNS_Provider']
             if ($dot) { $dot.BackColor = [System.Drawing.Color]::FromArgb(255, 200, 60) }
@@ -3899,7 +3909,7 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_TCP' -ErrorAction S
             if ($provName -eq 'None') {
                 # Reset DNS to DHCP
                 $elevatedScript = @'
-Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | ForEach-Object {
+Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false } | ForEach-Object {
     Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue
 }
 '@
@@ -3907,9 +3917,15 @@ Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | ForEach-Object {
                 $pri = $provInfo.Primary
                 $sec = $provInfo.Secondary
                 $elevatedScript = @"
-Get-NetAdapter | Where-Object { `$_.Status -eq 'Up' } | ForEach-Object {
-    Set-DnsClientServerAddress -InterfaceIndex `$_.ifIndex -ServerAddresses @('$pri','$sec') -ErrorAction Stop
+`$adapters = Get-NetAdapter | Where-Object { `$_.Status -eq 'Up' -and `$_.Virtual -eq `$false }
+`$success = `$false
+foreach (`$adapter in `$adapters) {
+    try {
+        Set-DnsClientServerAddress -InterfaceIndex `$adapter.ifIndex -ServerAddresses @('$pri','$sec') -ErrorAction Stop
+        `$success = `$true
+    } catch {}
 }
+if (-not `$success) { throw "No adapter could be configured" }
 "@
             }
 
@@ -3918,6 +3934,7 @@ Get-NetAdapter | Where-Object { `$_.Status -eq 'Up' } | ForEach-Object {
             $capturedNotifyConfig = $script:NotifyConfig
             $capturedSaveConfig = ${function:Save-Config}
             $capturedErrorLabel = $script:FWErrorLabel
+            $capturedPendingOps = $script:FWPendingOps
 
             & $script:InvokeElevatedFWAsync -ScriptContent $elevatedScript -ActionName "DNS_Provider" -OnComplete {
                 param($result)
@@ -3929,17 +3946,19 @@ Get-NetAdapter | Where-Object { `$_.Status -eq 'Up' } | ForEach-Object {
                             $capturedDot.BackColor = if ($capturedProvName -ne 'None') {
                                 [System.Drawing.Color]::FromArgb(0, 200, 100)
                             } else {
-                                [System.Drawing.Color]::FromArgb(220, 50, 60)
+                                [System.Drawing.Color]::FromArgb(80, 80, 100)
                             }
                         }
-                        $capturedErrorLabel.Text = ""
+                        if ($capturedErrorLabel) { $capturedErrorLabel.Text = "" }
                     } else {
                         if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
-                        $capturedErrorLabel.Text = "DNS change failed: $result"
+                        if ($capturedErrorLabel) { $capturedErrorLabel.Text = "DNS change failed: $result" }
                     }
                 } catch {}
+                $capturedPendingOps['DNS_Provider'] = $false
             }.GetNewClosure()
         } catch {
+            $script:FWPendingOps['DNS_Provider'] = $false
             if ($script:FWErrorLabel) { $script:FWErrorLabel.Text = "DNS: $($_.Exception.Message)" }
         }
     })
@@ -4027,16 +4046,16 @@ Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Paramet
                                 [System.Drawing.Color]::FromArgb(220, 50, 60)
                             }
                         }
-                        $capturedErrorLabel.Text = ""
+                        if ($capturedErrorLabel) { $capturedErrorLabel.Text = "" }
                     } else {
                         if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
-                        $capturedErrorLabel.Text = "DoH change failed: $result"
+                        if ($capturedErrorLabel) { $capturedErrorLabel.Text = "DoH change failed: $result" }
                     }
                 } catch {}
                 $capturedPendingOps['DNS_DoH'] = $false
             }.GetNewClosure()
         } catch {
-            if ($dot) { $dot.BackColor = [System.Drawing.Color]::FromArgb(255, 160, 40) }
+            if ($dot) { $dot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
             $script:LastFWError = "DNS_DoH: $($_.Exception.Message)"
             $script:FWPendingOps['DNS_DoH'] = $false
         }
@@ -4085,7 +4104,11 @@ Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Paramet
                 $results['DNS_DoH'] = ($null -ne $regVal -and $regVal.EnableAutoDoh -eq 2)
             } catch { $results['DNS_DoH'] = $false }
             try {
-                $dnsServers = (Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses
+                $physicalAdapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false }
+                $dnsServers = @()
+                foreach ($pa in $physicalAdapters) {
+                    $dnsServers += (Get-DnsClientServerAddress -InterfaceIndex $pa.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses
+                }
                 $results['DNS_Provider'] = if ($dnsServers -contains '1.1.1.1') { 'Cloudflare' }
                     elseif ($dnsServers -contains '9.9.9.9') { 'Quad9' }
                     elseif ($dnsServers -contains '8.8.8.8') { 'Google' }
