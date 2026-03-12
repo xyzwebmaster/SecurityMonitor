@@ -3249,6 +3249,9 @@ try {
 
     # --- Elevated PowerShell helper (async — no GUI freeze) ---
     # Launches elevated PS, then polls result via 500ms timer. Calls $OnComplete scriptblock with result.
+    # Check once at setup time if we are already elevated
+    $script:IsElevated = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
     $script:InvokeElevatedFWAsync = {
         param([string]$ScriptContent, [string]$ActionName, [scriptblock]$OnComplete)
         $tmpForScript = [System.IO.Path]::GetTempFileName()
@@ -3266,7 +3269,13 @@ try {
 "@
         [System.IO.File]::WriteAllText($scriptFile, $wrappedScript)
         try {
-            $proc = Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $scriptFile -Verb RunAs -PassThru -ErrorAction Stop
+            if ($script:IsElevated) {
+                # Already admin — run directly without UAC prompt
+                $proc = Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $scriptFile -PassThru -ErrorAction Stop
+            } else {
+                # Not admin — elevate via UAC
+                $proc = Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $scriptFile -Verb RunAs -PassThru -ErrorAction Stop
+            }
         } catch {
             # UAC cancelled or failed
             if (Test-Path $scriptFile) { Remove-Item $scriptFile -Force -ErrorAction SilentlyContinue }
