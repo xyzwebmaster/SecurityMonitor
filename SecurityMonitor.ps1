@@ -3932,7 +3932,13 @@ Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false } 
 `$success = `$false
 foreach (`$adapter in `$adapters) {
     try {
-        Set-DnsClientServerAddress -InterfaceIndex `$adapter.ifIndex -ServerAddresses @('$pri','$sec','$pri6','$sec6') -ErrorAction Stop
+        `$allAddrs = @('$pri','$sec','$pri6','$sec6') | Where-Object { `$_ -and `$_ -ne '' }
+        try {
+            Set-DnsClientServerAddress -InterfaceIndex `$adapter.ifIndex -ServerAddresses `$allAddrs -ErrorAction Stop
+        } catch {
+            `$v4Only = @('$pri','$sec') | Where-Object { `$_ -and `$_ -ne '' }
+            Set-DnsClientServerAddress -InterfaceIndex `$adapter.ifIndex -ServerAddresses `$v4Only -ErrorAction Stop
+        }
         `$success = `$true
     } catch {}
 }
@@ -4058,9 +4064,18 @@ foreach (`$srv in `$dohServers) {
     } catch {}
 }
 
-# Configure per-adapter DoH via registry for each active physical adapter
+# Set DNS server addresses on active adapters (required for DoH to show as encrypted)
 `$adapters = Get-NetAdapter | Where-Object { `$_.Status -eq 'Up' -and `$_.Virtual -eq `$false }
 foreach (`$adapter in `$adapters) {
+    `$allAddrs = @(`$dohServers | Where-Object { `$_ })
+    try {
+        Set-DnsClientServerAddress -InterfaceIndex `$adapter.ifIndex -ServerAddresses `$allAddrs -ErrorAction Stop
+    } catch {
+        `$v4Only = @('$pri','$sec') | Where-Object { `$_ -and `$_ -ne '' }
+        try { Set-DnsClientServerAddress -InterfaceIndex `$adapter.ifIndex -ServerAddresses `$v4Only -ErrorAction Stop } catch {}
+    }
+
+    # Configure per-adapter DoH via registry — DohFlags=2 + DohTemplate
     `$guid = `$adapter.InterfaceGuid
     `$basePath = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\`$guid\DohInterfaceSettings\Doh"
     foreach (`$srv in `$dohServers) {
@@ -4068,6 +4083,7 @@ foreach (`$adapter in `$adapters) {
         `$srvPath = "`$basePath\`$srv"
         New-Item -Path `$srvPath -Force -ErrorAction SilentlyContinue | Out-Null
         Set-ItemProperty -LiteralPath `$srvPath -Name 'DohFlags' -Value 2 -Type QWord -Force -ErrorAction SilentlyContinue
+        Set-ItemProperty -LiteralPath `$srvPath -Name 'DohTemplate' -Value '$dohTemplate' -Type String -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -4246,7 +4262,7 @@ ipconfig /flushdns | Out-Null
                                         $script:FWStatusDots['DNS_Provider'].BackColor = if ($providerName -ne 'None') {
                                             [System.Drawing.Color]::FromArgb(0, 200, 100)
                                         } else {
-                                            [System.Drawing.Color]::FromArgb(220, 50, 60)
+                                            [System.Drawing.Color]::FromArgb(80, 80, 100)
                                         }
                                     }
                                     if ($script:FWCheckboxes.ContainsKey('DNS_DoH')) {
