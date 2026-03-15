@@ -3134,16 +3134,7 @@ try {
                 if (-not $aiEnabled -and $script:CurrentPage -eq "AI Threats") {
                     & $script:SwitchPageFn "Status"
                 }
-                # If AI was just enabled, run a scan
-                if ($aiEnabled -and -not $script:AiScanRunning) {
-                    Start-AiThreatScan
-                }
-                # Stop/start periodic timer
-                if ($aiEnabled) {
-                    if ($script:AiPeriodicTimer) { $script:AiPeriodicTimer.Start() }
-                } else {
-                    if ($script:AiPeriodicTimer) { $script:AiPeriodicTimer.Stop() }
-                }
+                # AI scans are manual-only — no auto-scan on toggle or periodic timer
             } catch {}
         } catch {}
     })
@@ -3252,14 +3243,52 @@ try {
     # Check once at setup time if we are already elevated
     $script:IsElevated = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
+    # Verify scripts — per-setting verification expressions run inside the elevated process
+    $script:VerifyScripts = @{
+        'FW_DomainProfile'  = '$p = Get-NetFirewallProfile -Name Domain -EA SilentlyContinue; $null -ne $p -and $p.Enabled -eq {0}'
+        'FW_PrivateProfile' = '$p = Get-NetFirewallProfile -Name Private -EA SilentlyContinue; $null -ne $p -and $p.Enabled -eq {0}'
+        'FW_PublicProfile'  = '$p = Get-NetFirewallProfile -Name Public -EA SilentlyContinue; $null -ne $p -and $p.Enabled -eq {0}'
+        'FW_BlockInbound'   = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_BlockAllInbound" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
+        'FW_BlockOutbound'  = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_BlockAllOutbound" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
+        'FW_BlockPing'      = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_BlockICMP" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
+        'FW_BlockLAN'       = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_BlockLAN_In_192" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
+        'FW_BlockDevices'   = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_BlockDev_SMB_In" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
+        'PF_BlockTrackers'  = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) { $h -match "SecurityMonitor-Trackers-Start" } else { $h -notmatch "SecurityMonitor-Trackers-Start" }'
+        'PF_BlockMalware'   = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) { $h -match "SecurityMonitor-Malware-Start" } else { $h -notmatch "SecurityMonitor-Malware-Start" }'
+        'PF_BlockTelemetry' = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) { $h -match "SecurityMonitor-Telemetry-Start" } else { $h -notmatch "SecurityMonitor-Telemetry-Start" }'
+        'PF_BlockDNSBypass' = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_DNSLock_Out" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
+        'DNS_DoH'           = '$rv = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters" -Name "EnableAutoDoh" -EA SilentlyContinue; if ({0}) { $null -ne $rv -and $rv.EnableAutoDoh -eq 2 } else { $null -eq $rv -or $rv.EnableAutoDoh -ne 2 }'
+    }
+
     $script:InvokeElevatedFWAsync = {
-        param([string]$ScriptContent, [string]$ActionName, [scriptblock]$OnComplete)
+        param([string]$ScriptContent, [string]$ActionName, [scriptblock]$OnComplete, [string]$VerifyScript = '')
         $tmpForScript = [System.IO.Path]::GetTempFileName()
         $scriptFile = $tmpForScript -replace '\.tmp$', '.ps1'
         Remove-Item $tmpForScript -Force -ErrorAction SilentlyContinue
         $resultFile = [System.IO.Path]::GetTempFileName()
         $escapedResultFile = $resultFile -replace "'", "''"
-        $wrappedScript = @"
+        if ($VerifyScript -ne '') {
+            # Verify branch: run action, then double-verify actual system state
+            # Uses & { } scriptblock wrapper so multi-statement verify expressions return correct boolean
+            $wrappedScript = @"
+try {
+    $ScriptContent
+    Start-Sleep -Milliseconds 500
+    `$pass1 = & { $VerifyScript }
+    Start-Sleep -Milliseconds 800
+    `$pass2 = & { $VerifyScript }
+    if (`$pass1 -and `$pass2) {
+        'VERIFIED' | Out-File -FilePath '$escapedResultFile' -Encoding UTF8
+    } else {
+        'SUCCESS' | Out-File -FilePath '$escapedResultFile' -Encoding UTF8
+    }
+} catch {
+    "ERROR: `$(`$_.Exception.Message)" | Out-File -FilePath '$escapedResultFile' -Encoding UTF8
+}
+"@
+        } else {
+            # No-verify branch: just run action
+            $wrappedScript = @"
 try {
     $ScriptContent
     'SUCCESS' | Out-File -FilePath '$escapedResultFile' -Encoding UTF8
@@ -3267,6 +3296,7 @@ try {
     "ERROR: `$(`$_.Exception.Message)" | Out-File -FilePath '$escapedResultFile' -Encoding UTF8
 }
 "@
+        }
         [System.IO.File]::WriteAllText($scriptFile, $wrappedScript)
         try {
             if ($script:IsElevated) {
@@ -3768,15 +3798,19 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_TCP' -ErrorAction S
                     $capturedStatusDots = $script:FWStatusDots
                     $capturedErrorLabel = $script:FWErrorLabel
 
-                    & $script:InvokeElevatedFWAsync -ScriptContent $elevatedScript -ActionName $cfgKey -OnComplete {
+                    # Build verify expression for this key
+                    $verifyExpr = ''
+                    if ($script:VerifyScripts.ContainsKey($cfgKey)) {
+                        $verifyExpr = $script:VerifyScripts[$cfgKey] -f $(if ($isChecked) { '$true' } else { '$false' })
+                    }
+
+                    & $script:InvokeElevatedFWAsync -ScriptContent $elevatedScript -ActionName $cfgKey -VerifyScript $verifyExpr -OnComplete {
                         param($result)
                         try {
-                            if ($result -match '^SUCCESS') {
-                                # Reset retry counter on success
+                            if ($result -match '^VERIFIED') {
+                                # Action succeeded + double-verification passed — green
                                 $capturedRetryCount[$capturedKey] = 0
-                                try {
-                                    $capturedCb.Checked = $capturedChecked
-                                } catch {}
+                                try { $capturedCb.Checked = $capturedChecked } catch {}
                                 $capturedNotifyConfig | Add-Member -MemberType NoteProperty -Name $capturedKey -Value $capturedChecked -Force
                                 & $capturedSaveConfig
                                 if ($capturedDot) {
@@ -3786,15 +3820,28 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_TCP' -ErrorAction S
                                         [System.Drawing.Color]::FromArgb(220, 50, 60)
                                     }
                                 }
-                                $capturedErrorLabel.Text = ""
+                                if ($capturedErrorLabel) { $capturedErrorLabel.Text = "" }
+                                $capturedPendingOps[$capturedKey] = $false
+                            } elseif ($result -match '^SUCCESS') {
+                                # Action succeeded but verification failed — orange warning
+                                try { $capturedCb.Checked = $capturedChecked } catch {}
+                                $capturedNotifyConfig | Add-Member -MemberType NoteProperty -Name $capturedKey -Value $capturedChecked -Force
+                                & $capturedSaveConfig
+                                if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 160, 40) }
+                                if ($capturedErrorLabel) { $capturedErrorLabel.Text = "$capturedKey applied but verification failed — setting may have been blocked" }
+                                $capturedPendingOps[$capturedKey] = $false
                             } else {
-                                # FAILED
+                                # ERROR
                                 $capturedRetryCount[$capturedKey] = ($capturedRetryCount[$capturedKey] + 1)
                                 if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
-                                $capturedErrorLabel.Text = "Failed: $capturedKey - $result"
+                                if ($capturedErrorLabel) { $capturedErrorLabel.Text = "Failed: $capturedKey - $result" }
+                                $capturedPendingOps[$capturedKey] = $false
                             }
-                        } catch {}
-                        $capturedPendingOps[$capturedKey] = $false
+                        } catch {
+                            if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
+                            if ($capturedErrorLabel) { $capturedErrorLabel.Text = "Error: $capturedKey - $($_.Exception.Message)" }
+                            $capturedPendingOps[$capturedKey] = $false
+                        }
                     }.GetNewClosure()
                 } else {
                     $script:FWPendingOps[$cfgKey] = $false
@@ -3971,7 +4018,10 @@ if (-not `$success) { throw "No adapter could be configured" }
                         if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
                         if ($capturedErrorLabel) { $capturedErrorLabel.Text = "DNS change failed: $result" }
                     }
-                } catch {}
+                } catch {
+                    if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
+                    if ($capturedErrorLabel) { $capturedErrorLabel.Text = "DNS error: $($_.Exception.Message)" }
+                }
                 $capturedPendingOps['DNS_Provider'] = $false
             }.GetNewClosure()
         } catch {
@@ -4126,10 +4176,13 @@ ipconfig /flushdns | Out-Null
             $capturedErrorLabel = $script:FWErrorLabel
             $capturedPendingOps = $script:FWPendingOps
 
-            & $script:InvokeElevatedFWAsync -ScriptContent $elevatedScript -ActionName "DNS_DoH" -OnComplete {
+            # Build verify expression for DNS_DoH
+            $verifyExpr = $script:VerifyScripts['DNS_DoH'] -f $(if ($isChecked) { '$true' } else { '$false' })
+
+            & $script:InvokeElevatedFWAsync -ScriptContent $elevatedScript -ActionName "DNS_DoH" -VerifyScript $verifyExpr -OnComplete {
                 param($result)
                 try {
-                    if ($result -match '^SUCCESS') {
+                    if ($result -match '^VERIFIED') {
                         $capturedNotifyConfig | Add-Member -MemberType NoteProperty -Name 'DNS_DoH' -Value $capturedChecked -Force
                         & $capturedSaveConfig
                         if ($capturedDot) {
@@ -4140,12 +4193,23 @@ ipconfig /flushdns | Out-Null
                             }
                         }
                         if ($capturedErrorLabel) { $capturedErrorLabel.Text = "" }
+                        $capturedPendingOps['DNS_DoH'] = $false
+                    } elseif ($result -match '^SUCCESS') {
+                        $capturedNotifyConfig | Add-Member -MemberType NoteProperty -Name 'DNS_DoH' -Value $capturedChecked -Force
+                        & $capturedSaveConfig
+                        if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 160, 40) }
+                        if ($capturedErrorLabel) { $capturedErrorLabel.Text = "DoH applied but verification failed" }
+                        $capturedPendingOps['DNS_DoH'] = $false
                     } else {
                         if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
                         if ($capturedErrorLabel) { $capturedErrorLabel.Text = "DoH change failed: $result" }
+                        $capturedPendingOps['DNS_DoH'] = $false
                     }
-                } catch {}
-                $capturedPendingOps['DNS_DoH'] = $false
+                } catch {
+                    if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
+                    if ($capturedErrorLabel) { $capturedErrorLabel.Text = "DoH error: $($_.Exception.Message)" }
+                    $capturedPendingOps['DNS_DoH'] = $false
+                }
             }.GetNewClosure()
         } catch {
             if ($dot) { $dot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
@@ -4666,10 +4730,11 @@ ipconfig /flushdns | Out-Null
         try { Start-AiThreatScan } catch {}
     })
 
-    if ($script:AiFeatureEnabled) {
-        $script:AiInitTimer.Start()
-        $script:AiPeriodicTimer.Start()
-    }
+    # AI scan timers disabled — user runs scans manually via button
+    # if ($script:AiFeatureEnabled) {
+    #     $script:AiInitTimer.Start()
+    #     $script:AiPeriodicTimer.Start()
+    # }
 
     # Set open tab and switch page
     $script:DashboardOpenTab = $OpenTab
