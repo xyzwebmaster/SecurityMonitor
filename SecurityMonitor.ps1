@@ -3257,7 +3257,8 @@ try {
         'PF_BlockMalware'   = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) { $h -match "SecurityMonitor-Malware-Start" } else { $h -notmatch "SecurityMonitor-Malware-Start" }'
         'PF_BlockTelemetry' = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) { $h -match "SecurityMonitor-Telemetry-Start" } else { $h -notmatch "SecurityMonitor-Telemetry-Start" }'
         'PF_BlockDNSBypass' = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_DNSLock_Out" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
-        'DNS_DoH'           = '$rv = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters" -Name "EnableAutoDoh" -EA SilentlyContinue; if ({0}) { $null -ne $rv -and $rv.EnableAutoDoh -eq 2 } else { $null -eq $rv -or $rv.EnableAutoDoh -ne 2 }'
+        'DNS_DoH'           = '$rv = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters" -Name "EnableAutoDoh" -EA SilentlyContinue; $globalOk = if ({0}) { $null -ne $rv -and $rv.EnableAutoDoh -eq 2 } else { $null -eq $rv -or $rv.EnableAutoDoh -ne 2 }; if (-not $globalOk) { $false; return }; if ({0}) { $adapters = Get-NetAdapter | Where-Object { $_.Status -eq "Up" -and $_.Virtual -eq $false }; $hasPerAdapter = $false; foreach ($a in $adapters) { $dohPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($a.InterfaceGuid)\DohInterfaceSettings\Doh"; if (Test-Path $dohPath) { $children = Get-ChildItem $dohPath -EA SilentlyContinue; if ($children.Count -gt 0) { $hasPerAdapter = $true; break } } }; $hasPerAdapter } else { $true }'
+        'DNS_Provider'      = '$expectedPrimary = {0}; $adapters = Get-NetAdapter | Where-Object {{ $_.Status -eq "Up" -and $_.Virtual -eq $false }}; if ($null -eq $expectedPrimary -or $expectedPrimary -eq "None") {{ $allDhcp = $true; foreach ($a in $adapters) {{ $dns = (Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -EA SilentlyContinue).ServerAddresses; if ($dns.Count -gt 0) {{ $knownProviders = @("1.1.1.1","1.0.0.1","9.9.9.9","149.112.112.112","8.8.8.8","8.8.4.4","208.67.222.222","208.67.220.220","94.140.14.14","94.140.15.15"); $isKnown = $false; foreach ($d in $dns) {{ if ($knownProviders -contains $d) {{ $isKnown = $true; break }} }}; if ($isKnown) {{ $allDhcp = $false; break }} }} }}; $allDhcp }} else {{ $found = $false; foreach ($a in $adapters) {{ $dns = (Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -EA SilentlyContinue).ServerAddresses; if ($dns -contains $expectedPrimary) {{ $found = $true; break }} }}; $found }}'
     }
 
     $script:InvokeElevatedFWAsync = {
@@ -3999,11 +4000,16 @@ if (-not `$success) { throw "No adapter could be configured" }
             $capturedSaveConfig = ${function:Save-Config}
             $capturedErrorLabel = $script:FWErrorLabel
             $capturedPendingOps = $script:FWPendingOps
+            $capturedDohCb = $script:FWCheckboxes['DNS_DoH']
 
-            & $script:InvokeElevatedFWAsync -ScriptContent $elevatedScript -ActionName "DNS_Provider" -OnComplete {
+            # Build verify expression for DNS_Provider
+            $expectedPrimary = if ($provName -eq 'None') { "'None'" } else { "'$($provInfo.Primary)'" }
+            $verifyExpr = $script:VerifyScripts['DNS_Provider'] -f $expectedPrimary
+
+            & $script:InvokeElevatedFWAsync -ScriptContent $elevatedScript -ActionName "DNS_Provider" -VerifyScript $verifyExpr -OnComplete {
                 param($result)
                 try {
-                    if ($result -match '^SUCCESS') {
+                    if ($result -match '^VERIFIED') {
                         $capturedNotifyConfig | Add-Member -MemberType NoteProperty -Name 'DNS_Provider' -Value $capturedProvName -Force
                         & $capturedSaveConfig
                         if ($capturedDot) {
@@ -4014,6 +4020,29 @@ if (-not `$success) { throw "No adapter could be configured" }
                             }
                         }
                         if ($capturedErrorLabel) { $capturedErrorLabel.Text = "" }
+                        # Disable DoH checkbox when provider is None
+                        if ($capturedDohCb) {
+                            if ($capturedProvName -eq 'None') {
+                                $capturedDohCb.Checked = $false
+                                $capturedDohCb.Enabled = $false
+                            } else {
+                                $capturedDohCb.Enabled = $true
+                            }
+                        }
+                    } elseif ($result -match '^SUCCESS') {
+                        $capturedNotifyConfig | Add-Member -MemberType NoteProperty -Name 'DNS_Provider' -Value $capturedProvName -Force
+                        & $capturedSaveConfig
+                        if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 160, 40) }
+                        if ($capturedErrorLabel) { $capturedErrorLabel.Text = "DNS applied but verification pending" }
+                        # Disable DoH checkbox when provider is None
+                        if ($capturedDohCb) {
+                            if ($capturedProvName -eq 'None') {
+                                $capturedDohCb.Checked = $false
+                                $capturedDohCb.Enabled = $false
+                            } else {
+                                $capturedDohCb.Enabled = $true
+                            }
+                        }
                     } else {
                         if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
                         if ($capturedErrorLabel) { $capturedErrorLabel.Text = "DNS change failed: $result" }
@@ -4064,6 +4093,8 @@ if (-not `$success) { throw "No adapter could be configured" }
     $dohCb.Tag = "DNS_DoH"
     $propDoH = $script:NotifyConfig.PSObject.Properties['DNS_DoH']
     $dohCb.Checked = if ($null -eq $propDoH) { $false } else { $propDoH.Value -eq $true }
+    # Disable DoH checkbox if no DNS provider is selected
+    if ($currentProvider -eq 'None') { $dohCb.Enabled = $false }
     $dohCard.Controls.Add($dohCb)
     $script:FWCheckboxes['DNS_DoH'] = $dohCb
 
@@ -4080,15 +4111,21 @@ if (-not `$success) { throw "No adapter could be configured" }
         try {
             if ($script:SuppressSettingsSave) { return }
             if ($script:FWPendingOps.ContainsKey('DNS_DoH') -and $script:FWPendingOps['DNS_DoH']) { return }
+
+            # Guard: DoH requires a DNS provider to be selected
+            $selectedDns = $script:DnsProviderCombo.SelectedItem.ToString()
+            $dnsInfo = $script:DnsProviderReverseMap[$selectedDns]
+            if ($this.Checked -and ($null -eq $dnsInfo -or $dnsInfo.Name -eq 'None')) {
+                try { $script:SuppressSettingsSave = $true; $this.Checked = $false } finally { $script:SuppressSettingsSave = $false }
+                if ($script:FWErrorLabel) { $script:FWErrorLabel.Text = "Select a DNS provider before enabling DoH" }
+                return
+            }
+
             $script:FWPendingOps['DNS_DoH'] = $true
 
             $isChecked = $this.Checked
             $dot = $script:FWStatusDots['DNS_DoH']
             if ($dot) { $dot.BackColor = [System.Drawing.Color]::FromArgb(255, 200, 60) }
-
-            # Get current DNS provider info for DoH template and server addresses
-            $selectedDns = $script:DnsProviderCombo.SelectedItem.ToString()
-            $dnsInfo = $script:DnsProviderReverseMap[$selectedDns]
 
             if ($isChecked) {
                 $dohTemplate = if ($dnsInfo -and $dnsInfo.DohTemplate) { $dnsInfo.DohTemplate } else { '' }
@@ -4102,16 +4139,19 @@ Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\
 
 # Register DoH server templates with AutoUpgrade for all provider addresses (IPv4 + IPv6)
 `$dohServers = @('$pri','$sec','$pri6','$sec6')
-foreach (`$srv in `$dohServers) {
-    if (-not `$srv) { continue }
-    try {
-        `$existing = Get-DnsClientDohServerAddress -ServerAddress `$srv -ErrorAction SilentlyContinue
-        if (`$existing) {
-            Set-DnsClientDohServerAddress -ServerAddress `$srv -DohTemplate '$dohTemplate' -AllowFallbackToUdp `$false -AutoUpgrade `$true -ErrorAction Stop
-        } else {
-            Add-DnsClientDohServerAddress -ServerAddress `$srv -DohTemplate '$dohTemplate' -AllowFallbackToUdp `$false -AutoUpgrade `$true -ErrorAction Stop
-        }
-    } catch {}
+`$hasDohCmdlets = (`$null -ne (Get-Command -Name 'Add-DnsClientDohServerAddress' -ErrorAction SilentlyContinue))
+if (`$hasDohCmdlets) {
+    foreach (`$srv in `$dohServers) {
+        if (-not `$srv) { continue }
+        try {
+            `$existing = Get-DnsClientDohServerAddress -ServerAddress `$srv -ErrorAction SilentlyContinue
+            if (`$existing) {
+                Set-DnsClientDohServerAddress -ServerAddress `$srv -DohTemplate '$dohTemplate' -AllowFallbackToUdp `$false -AutoUpgrade `$true -ErrorAction Stop
+            } else {
+                Add-DnsClientDohServerAddress -ServerAddress `$srv -DohTemplate '$dohTemplate' -AllowFallbackToUdp `$false -AutoUpgrade `$true -ErrorAction Stop
+            }
+        } catch {}
+    }
 }
 
 # Set DNS server addresses on active adapters (required for DoH to show as encrypted)
@@ -4150,11 +4190,13 @@ Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\
 
 # Reset AutoUpgrade on DoH server entries
 `$dohServers = @('$pri','$sec','$pri6','$sec6')
-foreach (`$srv in `$dohServers) {
-    if (-not `$srv) { continue }
-    try {
-        Set-DnsClientDohServerAddress -ServerAddress `$srv -AllowFallbackToUdp `$false -AutoUpgrade `$false -ErrorAction SilentlyContinue
-    } catch {}
+if (`$null -ne (Get-Command -Name 'Set-DnsClientDohServerAddress' -ErrorAction SilentlyContinue)) {
+    foreach (`$srv in `$dohServers) {
+        if (-not `$srv) { continue }
+        try {
+            Set-DnsClientDohServerAddress -ServerAddress `$srv -AllowFallbackToUdp `$false -AutoUpgrade `$false -ErrorAction SilentlyContinue
+        } catch {}
+    }
 }
 
 # Remove per-adapter DoH registry entries
@@ -4310,11 +4352,16 @@ ipconfig /flushdns | Out-Null
                     Remove-Job -Job $script:FWStatusJob -Force -ErrorAction SilentlyContinue
                     $script:FWStatusJob = $null
                     $script:FWRetryCount = @{}
+                    # Preserve active pending operations so in-flight changes aren't overwritten
+                    $activePending = @($script:FWPendingOps.Keys | Where-Object { $script:FWPendingOps[$_] })
                     $script:FWPendingOps = @{}
+                    foreach ($pk in $activePending) { $script:FWPendingOps[$pk] = $true }
                     if ($statusResults -is [hashtable]) {
                         try {
                             $script:SuppressSettingsSave = $true
                             foreach ($key in $statusResults.Keys) {
+                                # Skip keys with active pending operations to avoid overwriting in-flight changes
+                                if ($script:FWPendingOps.ContainsKey($key) -and $script:FWPendingOps[$key]) { continue }
                                 $val = $statusResults[$key]
                                 if ($key -eq 'DNS_Provider') {
                                     $providerName = [string]$val
