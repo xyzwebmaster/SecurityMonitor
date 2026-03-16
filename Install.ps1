@@ -4,7 +4,7 @@
     SecurityMonitor installation script
 .DESCRIPTION
     Sets up the monitoring script to run automatically at Windows startup,
-    creates a scheduled task, and starts monitoring immediately.
+    creates a scheduled task, desktop shortcut, and starts monitoring immediately.
 #>
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -57,7 +57,7 @@ if (-not (Test-Path $hhPath)) {
 }
 
 # 1. Execution policy
-Write-Host "[1/5] Checking PowerShell execution policy..."
+Write-Host "[1/6] Checking PowerShell execution policy..."
 $currentPolicy = Get-ExecutionPolicy -Scope CurrentUser
 if ($currentPolicy -eq "Restricted") {
     Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force -ErrorAction SilentlyContinue
@@ -67,7 +67,7 @@ if ($currentPolicy -eq "Restricted") {
 }
 
 # 2. Create log directories
-Write-Host "[2/5] Creating directories..."
+Write-Host "[2/6] Creating directories..."
 $dirs = @("$scriptDir\Logs", "$scriptDir\Baselines")
 foreach ($d in $dirs) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
@@ -75,7 +75,7 @@ foreach ($d in $dirs) {
 Write-Host "  -> Log and Baseline directories created" -ForegroundColor Green
 
 # 3. Create scheduled task (auto-starts at logon)
-Write-Host "[3/5] Creating scheduled task..."
+Write-Host "[3/6] Creating scheduled task..."
 $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($existingTask) {
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
@@ -99,8 +99,27 @@ $settings = New-ScheduledTaskSettingsSet `
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "System security monitoring tool - auto start" | Out-Null
 Write-Host "  -> Scheduled task created (auto-starts at every logon)" -ForegroundColor Green
 
-# 4. Start immediately
-Write-Host "[4/5] Starting monitoring now..."
+# 4. Create desktop shortcut (points to Launcher.ps1)
+Write-Host "[4/6] Creating desktop shortcut..."
+$launcherScript = Join-Path $scriptDir "Launcher.ps1"
+$desktopPath = [System.Environment]::GetFolderPath("Desktop")
+$shortcutPath = Join-Path $desktopPath "SecurityMonitor.lnk"
+try {
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = "powershell.exe"
+    $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcherScript`""
+    $shortcut.WorkingDirectory = $scriptDir
+    $shortcut.Description = "SecurityMonitor - Start or open dashboard"
+    $shortcut.IconLocation = "shell32.dll,77"
+    $shortcut.Save()
+    Write-Host "  -> Desktop shortcut created: $shortcutPath" -ForegroundColor Green
+} catch {
+    Write-Host "  -> Could not create desktop shortcut: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
+# 5. Start immediately
+Write-Host "[5/6] Starting monitoring now..."
 Start-ScheduledTask -TaskName $taskName
 Start-Sleep -Seconds 3
 $state = (Get-ScheduledTask -TaskName $taskName).State
@@ -110,8 +129,8 @@ if ($state -eq "Running") {
     Write-Host "  -> Status: $state (try starting manually)" -ForegroundColor Yellow
 }
 
-# 5. Verification
-Write-Host "[5/5] Verifying..."
+# 6. Verification
+Write-Host "[6/6] Verifying..."
 Start-Sleep -Seconds 5
 $logExists = Test-Path "$scriptDir\Logs\monitor_$(Get-Date -Format 'yyyy-MM-dd').log"
 if ($logExists) {
