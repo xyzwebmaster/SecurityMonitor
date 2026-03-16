@@ -6513,8 +6513,10 @@ function Start-Monitoring {
     })
     $script:SignalTimer.Start()
 
-    # Auto-open dashboard on first launch
-    try { Show-Dashboard } catch { Write-Host "[!] Auto-open dashboard error: $_" -ForegroundColor Red }
+    # Auto-open dashboard on first launch (skip in silent/tray-only mode)
+    if (-not $Silent) {
+        try { Show-Dashboard } catch { Write-Host "[!] Auto-open dashboard error: $_" -ForegroundColor Red }
+    }
 
     # Run the Windows Forms message loop (keeps UI responsive)
     [System.Windows.Forms.Application]::Run()

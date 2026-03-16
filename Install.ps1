@@ -125,6 +125,11 @@ Start-Sleep -Seconds 3
 $state = (Get-ScheduledTask -TaskName $taskName).State
 if ($state -eq "Running") {
     Write-Host "  -> Monitoring is running in the background" -ForegroundColor Green
+    # Signal the running instance to open its dashboard
+    Start-Sleep -Seconds 2
+    $signalFile = Join-Path $env:TEMP "SecurityMonitor_OpenDashboard.signal"
+    [System.IO.File]::WriteAllText($signalFile, "open")
+    Write-Host "  -> Dashboard opening..." -ForegroundColor Green
 } else {
     Write-Host "  -> Status: $state (try starting manually)" -ForegroundColor Yellow
 }
