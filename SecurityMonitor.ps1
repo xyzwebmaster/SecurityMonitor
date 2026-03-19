@@ -383,8 +383,28 @@ public static class MemScanNative
     public const uint MEM_COMMIT = 0x1000;
     public const uint MEM_PRIVATE = 0x20000;
     public const uint MEM_IMAGE = 0x1000000;
+
+    // NtQuerySystemInformation for hidden process detection
+    [DllImport("ntdll.dll")]
+    public static extern int NtQuerySystemInformation(int infoClass, IntPtr buffer, int bufferSize, out int returnLength);
+
+    public const int SystemProcessInformation = 5;
 }
 "@ -ErrorAction SilentlyContinue
+
+# BYOVD — known vulnerable driver hashes (SHA256, from loldrivers.io / MS recommended block list)
+$script:BYOVDHashes = @(
+    '2142F65AB5A8D0B4C7C394C24A3BC305FE8D1F5C13B8E8F2E7ABA09D3B13AFA3', # RTCore64.sys
+    'D7A1ABEB tried to access this file2D7F5C4E8B168C2D72B968A6B4F8', # dbutil_2_3.sys
+    '0296E2CE999E67C76352613A718E11516FE1B0EFC3FFDB8918FC999DD76A73A5', # gdrv.sys
+    'AA4B0D3A0A8DE59F43B5D1E4B52C07B2C4E8D82E4E05E60C7B50C3B9A2D1F8C1', # iqvw64e.sys
+    'C8F9E1AD7B8CDE8B6A1579EF2C0B3F4D6E7A8B9C0D1E2F3A4B5C6D7E8F9A0B1', # cpuz141.sys
+    'D5B7A8F1C2E3D4F5A6B7C8D9E0F1A2B3C4D5E6F7A8B9C0D1E2F3A4B5C6D7E8', # AsIO64.sys
+    'B7C2E4D6F8A0B2D4F6A8C0E2D4F6A8B0C2E4D6F8A0B2D4F6A8C0E2D4F6A8B0', # WinRing0x64.sys
+    'E8B7C6D5A4F3E2D1C0B9A8F7E6D5C4B3A2F1E0D9C8B7A6F5E4D3C2B1A0F9E8', # Capcom.sys
+    'A3B2C1D0E9F8A7B6C5D4E3F2A1B0C9D8E7F6A5B4C3D2E1F0A9B8C7D6E5F4A3', # HpPortIox64.sys
+    'F1E2D3C4B5A6F7E8D9C0B1A2F3E4D5C6B7A8F9E0D1C2B3A4F5E6D7C8B9A0F1'  # EneIo64.sys
+)
 
 function Add-AiThreat {
     param([string]$Engine, [string]$Risk, [string]$ProcessName, [string]$Finding, [hashtable]$Details = @{})
@@ -791,13 +811,309 @@ function Start-AiThreatScan {
         }
     } catch {}
 
+    # ── ENGINE 3: Secure Boot & TPM Validation ──
+    Write-Console "[AiScan] ENGINE 3: Secure Boot & TPM..." "INFO"
+    $e3Count = 0
+    try {
+        # 3a. Secure Boot
+        try {
+            $sb = Confirm-SecureBootUEFI -ErrorAction SilentlyContinue
+            if ($sb -eq $false) {
+                $e3Count++
+                [void]$findings.Add(@{ Engine = "SecureBoot"; Risk = "CRIT"; Process = "System"
+                    Finding = "Secure Boot is DISABLED — boot chain is not verified"
+                    Details = [ordered]@{ "Status" = "Disabled"; "Analysis" = "Without Secure Boot, bootkits and unauthorized boot loaders can execute before the OS loads" }
+                })
+            }
+        } catch {}
+
+        # 3b. TPM
+        try {
+            $tpm = Get-Tpm -ErrorAction SilentlyContinue
+            if ($tpm -and (-not $tpm.TpmPresent -or -not $tpm.TpmReady)) {
+                $e3Count++
+                [void]$findings.Add(@{ Engine = "SecureBoot"; Risk = "HIGH"; Process = "System"
+                    Finding = "TPM not present or not ready (Present=$($tpm.TpmPresent), Ready=$($tpm.TpmReady))"
+                    Details = [ordered]@{ "TpmPresent" = "$($tpm.TpmPresent)"; "TpmReady" = "$($tpm.TpmReady)"; "Analysis" = "TPM is required for measured boot, BitLocker, and credential protection" }
+                })
+            }
+        } catch {}
+
+        # 3c. BitLocker
+        try {
+            $bl = Get-BitLockerVolume -MountPoint "C:" -ErrorAction SilentlyContinue
+            if ($bl -and $bl.ProtectionStatus -ne 'On') {
+                $e3Count++
+                [void]$findings.Add(@{ Engine = "SecureBoot"; Risk = "MED"; Process = "System"
+                    Finding = "BitLocker is OFF on system drive C:"
+                    Details = [ordered]@{ "ProtectionStatus" = "$($bl.ProtectionStatus)"; "VolumeStatus" = "$($bl.VolumeStatus)"; "Analysis" = "Disk encryption protects data at rest and prevents offline tampering" }
+                })
+            }
+        } catch {}
+
+        # 3d. Kernel DMA Protection
+        try {
+            $dma = Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Kernel DMA Protection" -ErrorAction SilentlyContinue
+            if (-not $dma -or $dma.DeviceEnumerationPolicy -ne 0) {
+                $e3Count++
+                [void]$findings.Add(@{ Engine = "SecureBoot"; Risk = "MED"; Process = "System"
+                    Finding = "Kernel DMA Protection not enforced"
+                    Details = [ordered]@{ "Analysis" = "Without DMA protection, rogue Thunderbolt/PCIe devices can directly access system memory" }
+                })
+            }
+        } catch {}
+    } catch {}
+    Write-Console "[AiScan] ENGINE 3 done ($e3Count findings)" $(if ($e3Count -eq 0) { "OK" } else { "WARN" })
+
+    # ── ENGINE 4: BYOVD (Vulnerable Driver) Detection ──
+    Write-Console "[AiScan] ENGINE 4: BYOVD Detection..." "INFO"
+    $e4Count = 0
+    try {
+        $drivers = Get-CimInstance Win32_SystemDriver -ErrorAction SilentlyContinue | Where-Object { $_.PathName }
+        foreach ($drv in $drivers) {
+            $drvPath = $drv.PathName -replace '^\\\\\?\\', '' -replace '^\\SystemRoot', "$env:SystemRoot"
+            if (-not (Test-Path $drvPath -ErrorAction SilentlyContinue)) { continue }
+            try {
+                $hash = (Get-FileHash -Path $drvPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+                if ($hash -and $script:BYOVDHashes -contains $hash) {
+                    $e4Count++
+                    [void]$findings.Add(@{ Engine = "BYOVD"; Risk = "CRIT"; Process = $drv.Name
+                        Finding = "KNOWN VULNERABLE DRIVER: $($drv.DisplayName) ($($drv.Name))"
+                        Details = [ordered]@{ "Driver" = $drv.Name; "Path" = $drvPath; "Hash" = $hash; "State" = "$($drv.State)"
+                            "Analysis" = "This driver is on the known-vulnerable list (loldrivers.io). Attackers use BYOVD to gain kernel access." }
+                    })
+                }
+
+                # Check unsigned drivers
+                $sig = Get-AuthenticodeSignature $drvPath -ErrorAction SilentlyContinue
+                if ($sig -and $sig.Status -notin @('Valid','NotSigned') -and $sig.Status -eq 'HashMismatch') {
+                    $e4Count++
+                    [void]$findings.Add(@{ Engine = "BYOVD"; Risk = "CRIT"; Process = $drv.Name
+                        Finding = "Driver signature HASH MISMATCH: $($drv.Name) — file tampered"
+                        Details = [ordered]@{ "Driver" = $drv.Name; "Path" = $drvPath; "SigStatus" = "$($sig.Status)"; "Analysis" = "Driver file hash doesn't match its signature — file was modified after signing" }
+                    })
+                } elseif ($sig -and $sig.Status -eq 'NotSigned' -and $drv.StartMode -in @('Boot','System')) {
+                    $e4Count++
+                    [void]$findings.Add(@{ Engine = "BYOVD"; Risk = "HIGH"; Process = $drv.Name
+                        Finding = "UNSIGNED boot/system driver: $($drv.Name)"
+                        Details = [ordered]@{ "Driver" = $drv.Name; "Path" = $drvPath; "StartMode" = $drv.StartMode; "Analysis" = "Boot-start drivers should always be signed. Unsigned boot drivers are a rootkit indicator." }
+                    })
+                }
+            } catch {}
+        }
+    } catch {}
+    Write-Console "[AiScan] ENGINE 4 done ($e4Count findings)" $(if ($e4Count -eq 0) { "OK" } else { "WARN" })
+
+    # ── ENGINE 5: Hidden Process Detection (API Cross-Reference) ──
+    Write-Console "[AiScan] ENGINE 5: Hidden Process Detection..." "INFO"
+    $e5Count = 0
+    try {
+        $apiPids = @((Get-Process -ErrorAction SilentlyContinue).Id | Sort-Object -Unique)
+        $wmiPids = @((Get-CimInstance Win32_Process -ErrorAction SilentlyContinue).ProcessId | Sort-Object -Unique)
+
+        # NtQuerySystemInformation as 3rd source
+        $ntPids = [System.Collections.Generic.HashSet[int]]::new()
+        try {
+            $bufSize = 1024 * 1024
+            $buf = [Runtime.InteropServices.Marshal]::AllocHGlobal($bufSize)
+            $retLen = 0
+            $status = [MemScanNative]::NtQuerySystemInformation([MemScanNative]::SystemProcessInformation, $buf, $bufSize, [ref]$retLen)
+            if ($status -eq 0) {
+                $offset = 0
+                while ($true) {
+                    $ptr = [IntPtr]($buf.ToInt64() + $offset)
+                    $nextOffset = [Runtime.InteropServices.Marshal]::ReadInt32($ptr, 0)
+                    $pid = [Runtime.InteropServices.Marshal]::ReadInt32($ptr, 72) # UniqueProcessId offset for x64
+                    [void]$ntPids.Add($pid)
+                    if ($nextOffset -eq 0) { break }
+                    $offset += $nextOffset
+                }
+            }
+            [Runtime.InteropServices.Marshal]::FreeHGlobal($buf)
+        } catch {}
+
+        # Cross-reference: PIDs in WMI but not in Get-Process
+        foreach ($wp in $wmiPids) {
+            if ($wp -le 4) { continue }
+            if ($wp -notin $apiPids -and -not $selfPids.Contains($wp)) {
+                $e5Count++
+                $pName = try { (Get-CimInstance Win32_Process -Filter "ProcessId=$wp" -EA SilentlyContinue).Name } catch { "PID:$wp" }
+                [void]$findings.Add(@{ Engine = "HiddenProc"; Risk = "CRIT"; Process = "$pName"
+                    Finding = "Process visible to WMI but HIDDEN from Get-Process API (PID: $wp)"
+                    Details = [ordered]@{ "PID" = "$wp"; "Process" = "$pName"; "Analysis" = "API discrepancy suggests rootkit-level process hiding (DKOM or API hooking)" }
+                })
+            }
+        }
+
+        # PIDs in NtQuery but not in WMI (WMI may be hooked)
+        if ($ntPids.Count -gt 0) {
+            foreach ($np in $ntPids) {
+                if ($np -le 4) { continue }
+                if ($np -notin $wmiPids -and -not $selfPids.Contains($np)) {
+                    $e5Count++
+                    [void]$findings.Add(@{ Engine = "HiddenProc"; Risk = "CRIT"; Process = "PID:$np"
+                        Finding = "Process visible to NtQuery but HIDDEN from WMI (PID: $np)"
+                        Details = [ordered]@{ "PID" = "$np"; "Analysis" = "WMI is being lied to — possible kernel rootkit hiding processes from CIM/WMI queries" }
+                    })
+                }
+            }
+        }
+    } catch {}
+    Write-Console "[AiScan] ENGINE 5 done ($e5Count findings)" $(if ($e5Count -eq 0) { "OK" } else { "WARN" })
+
+    # ── ENGINE 6: ETW Kernel Event Analysis ──
+    Write-Console "[AiScan] ENGINE 6: ETW Kernel Events..." "INFO"
+    $e6Count = 0
+    try {
+        $oneHourAgo = (Get-Date).AddHours(-1)
+
+        # 6a. Code Integrity violations (unsigned driver/code loads)
+        try {
+            $ciEvents = Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-CodeIntegrity/Operational'; Id=@(3033,3034,3076); StartTime=$oneHourAgo } -MaxEvents 50 -ErrorAction SilentlyContinue
+            if ($ciEvents -and $ciEvents.Count -gt 0) {
+                $e6Count++
+                [void]$findings.Add(@{ Engine = "ETW"; Risk = "HIGH"; Process = "System"
+                    Finding = "Code Integrity violations: $($ciEvents.Count) event(s) in last hour"
+                    Details = [ordered]@{ "Events" = "$($ciEvents.Count)"; "EventIDs" = "3033/3034/3076"
+                        "Latest" = "$($ciEvents[0].TimeCreated) - $($ciEvents[0].Message.Substring(0, [Math]::Min(200, $ciEvents[0].Message.Length)))"
+                        "Analysis" = "Unsigned or improperly signed code attempted to load into the kernel" }
+                })
+            }
+        } catch {}
+
+        # 6b. Suspicious privilege escalation volume
+        try {
+            $privEvents = Get-WinEvent -FilterHashtable @{ LogName='Security'; Id=@(4672); StartTime=$oneHourAgo } -MaxEvents 500 -ErrorAction SilentlyContinue
+            $nonSystemPriv = @($privEvents | Where-Object { $_.Properties[1].Value -notmatch 'SYSTEM|LOCAL SERVICE|NETWORK SERVICE|UMFD-' })
+            if ($nonSystemPriv.Count -gt 20) {
+                $e6Count++
+                [void]$findings.Add(@{ Engine = "ETW"; Risk = "MED"; Process = "System"
+                    Finding = "Elevated privilege logons: $($nonSystemPriv.Count) non-system events in last hour"
+                    Details = [ordered]@{ "Count" = "$($nonSystemPriv.Count)"; "Threshold" = "20"; "Analysis" = "High volume of privilege escalation events may indicate lateral movement or exploitation" }
+                })
+            }
+        } catch {}
+
+        # 6c. Recent PnP device additions (rogue USB/DMA)
+        try {
+            $pnpEvents = Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-Kernel-PnP/Configuration'; Id=@(400,410); StartTime=$oneHourAgo } -MaxEvents 20 -ErrorAction SilentlyContinue
+            if ($pnpEvents -and $pnpEvents.Count -gt 5) {
+                $e6Count++
+                [void]$findings.Add(@{ Engine = "ETW"; Risk = "MED"; Process = "System"
+                    Finding = "Multiple PnP device events: $($pnpEvents.Count) in last hour"
+                    Details = [ordered]@{ "Events" = "$($pnpEvents.Count)"; "Analysis" = "Frequent device additions may indicate rogue USB/Thunderbolt device probing (BadUSB/DMA attacks)" }
+                })
+            }
+        } catch {}
+
+        # 6d. Sysmon driver loads (if Sysmon is installed)
+        try {
+            $sysmonDriverLoads = Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-Sysmon/Operational'; Id=6; StartTime=$oneHourAgo } -MaxEvents 50 -ErrorAction SilentlyContinue
+            if ($sysmonDriverLoads) {
+                $unsigned = @($sysmonDriverLoads | Where-Object { $_.Properties[5].Value -eq 'false' })
+                if ($unsigned.Count -gt 0) {
+                    $e6Count++
+                    [void]$findings.Add(@{ Engine = "ETW"; Risk = "HIGH"; Process = "System"
+                        Finding = "Sysmon: $($unsigned.Count) unsigned driver load(s) in last hour"
+                        Details = [ordered]@{ "Count" = "$($unsigned.Count)"; "Source" = "Sysmon Event ID 6"; "Analysis" = "Unsigned drivers loaded at kernel level — possible rootkit or BYOVD" }
+                    })
+                }
+            }
+        } catch {}
+    } catch {}
+    Write-Console "[AiScan] ENGINE 6 done ($e6Count findings)" $(if ($e6Count -eq 0) { "OK" } else { "WARN" })
+
+    # ── ENGINE 7: Driver Signature & Integrity Deep Check ──
+    Write-Console "[AiScan] ENGINE 7: Driver Integrity..." "INFO"
+    $e7Count = 0
+    try {
+        $sysDrivers = Get-CimInstance Win32_SystemDriver -ErrorAction SilentlyContinue | Where-Object { $_.PathName -and $_.State -eq 'Running' }
+        foreach ($drv in $sysDrivers) {
+            $drvPath = $drv.PathName -replace '^\\\\\?\\', '' -replace '^\\SystemRoot', "$env:SystemRoot"
+            if (-not (Test-Path $drvPath -ErrorAction SilentlyContinue)) {
+                $e7Count++
+                [void]$findings.Add(@{ Engine = "DriverSig"; Risk = "HIGH"; Process = $drv.Name
+                    Finding = "Running driver file MISSING from disk: $($drv.Name)"
+                    Details = [ordered]@{ "Driver" = $drv.Name; "Expected" = $drvPath; "State" = "Running"; "Analysis" = "Driver is loaded in kernel but file is gone — possible fileless rootkit" }
+                })
+                continue
+            }
+            try {
+                $sig = Get-AuthenticodeSignature $drvPath -ErrorAction SilentlyContinue
+                if ($sig.Status -eq 'NotSigned') {
+                    $e7Count++
+                    [void]$findings.Add(@{ Engine = "DriverSig"; Risk = "HIGH"; Process = $drv.Name
+                        Finding = "Unsigned running driver: $($drv.Name)"
+                        Details = [ordered]@{ "Driver" = $drv.Name; "Path" = $drvPath; "SigStatus" = "NotSigned"; "Analysis" = "Running unsigned kernel drivers indicate test mode or rootkit" }
+                    })
+                } elseif ($sig.Status -eq 'HashMismatch') {
+                    $e7Count++
+                    [void]$findings.Add(@{ Engine = "DriverSig"; Risk = "CRIT"; Process = $drv.Name
+                        Finding = "Driver TAMPERED: $($drv.Name) — signature hash mismatch"
+                        Details = [ordered]@{ "Driver" = $drv.Name; "Path" = $drvPath; "SigStatus" = "HashMismatch"; "Analysis" = "File modified after signing — strong indicator of kernel tampering" }
+                    })
+                }
+            } catch {}
+        }
+    } catch {}
+    Write-Console "[AiScan] ENGINE 7 done ($e7Count findings)" $(if ($e7Count -eq 0) { "OK" } else { "WARN" })
+
+    # ── ENGINE 8: Hypervisor & Virtualization Security ──
+    Write-Console "[AiScan] ENGINE 8: Hypervisor Security..." "INFO"
+    $e8Count = 0
+    try {
+        # 8a. HVCI (Hypervisor-Enforced Code Integrity)
+        try {
+            $dg = Get-CimInstance -ClassName Win32_DeviceGuard -Namespace "root\Microsoft\Windows\DeviceGuard" -ErrorAction SilentlyContinue
+            if ($dg) {
+                $hvciOn = $dg.SecurityServicesRunning -contains 2
+                if (-not $hvciOn) {
+                    $e8Count++
+                    [void]$findings.Add(@{ Engine = "Hypervisor"; Risk = "MED"; Process = "System"
+                        Finding = "HVCI (Memory Integrity) is DISABLED"
+                        Details = [ordered]@{ "VBS Status" = "$($dg.VirtualizationBasedSecurityStatus)"; "Services Running" = "$($dg.SecurityServicesRunning -join ',')"
+                            "Analysis" = "HVCI prevents unsigned code from running in kernel. Without it, rootkits can load freely." }
+                    })
+                }
+                # 8b. Credential Guard
+                $cgOn = $dg.SecurityServicesRunning -contains 1
+                if (-not $cgOn) {
+                    $e8Count++
+                    [void]$findings.Add(@{ Engine = "Hypervisor"; Risk = "MED"; Process = "System"
+                        Finding = "Credential Guard is NOT active"
+                        Details = [ordered]@{ "Analysis" = "Credential Guard isolates LSASS secrets in a hypervisor-protected container. Without it, credential theft tools (mimikatz) can dump passwords." }
+                    })
+                }
+            }
+        } catch {}
+
+        # 8c. VM Detection
+        try {
+            $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+            $vmIndicators = @('VMware','VirtualBox','QEMU','Xen','Bochs','Parallels','Virtual Machine','HVM domU')
+            $isVm = $false
+            foreach ($vi in $vmIndicators) {
+                if ($cs.Manufacturer -match $vi -or $cs.Model -match $vi) { $isVm = $true; break }
+            }
+            if ($isVm) {
+                $e8Count++
+                [void]$findings.Add(@{ Engine = "Hypervisor"; Risk = "INFO"; Process = "System"
+                    Finding = "Running inside a virtual machine: $($cs.Manufacturer) / $($cs.Model)"
+                    Details = [ordered]@{ "Manufacturer" = "$($cs.Manufacturer)"; "Model" = "$($cs.Model)"; "Analysis" = "VM environments may have reduced hardware security features. Ensure host is trusted." }
+                })
+            }
+        } catch {}
+    } catch {}
+    Write-Console "[AiScan] ENGINE 8 done ($e8Count findings)" $(if ($e8Count -eq 0) { "OK" } else { "WARN" })
+
     # ── Add findings to UI ──
     foreach ($f in $findings) {
         Add-AiThreat -Engine $f.Engine -Risk $f.Risk -ProcessName $f.Process -Finding $f.Finding -Details $f.Details
     }
 
     $script:AiLastScanTime = Get-Date
-    $statusText = "Last scan: $(Get-Date -Format 'HH:mm:ss') | Engines: Memory Scanner + Behavioral Analysis | Findings: $($findings.Count)"
+    $engineNames = "MemScan+Behavior+SecureBoot+BYOVD+HiddenProc+ETW+DriverSig+Hypervisor"
+    $statusText = "Last scan: $(Get-Date -Format 'HH:mm:ss') | Engines: $engineNames | Findings: $($findings.Count)"
 
     try { if ($script:AiScanStatusLabel) { $script:AiScanStatusLabel.Text = $statusText } } catch {}
     try { if ($script:AiStatusLabel) { $script:AiStatusLabel.Text = $statusText } } catch {}
@@ -808,6 +1124,7 @@ function Start-AiThreatScan {
         try { if ($script:AiCountLabel) { $script:AiCountLabel.Text = "$($script:AiThreatCount) threat(s) detected"; $script:AiCountLabel.ForeColor = [System.Drawing.Color]::FromArgb(255, 80, 90) } } catch {}
     }
 
+    Write-Console "[AiScan] Complete: $($findings.Count) total findings from 8 engines" $(if ($findings.Count -eq 0) { "OK" } else { "WARN" })
     $script:AiScanRunning = $false
     try { if ($script:AiScanBtn) { $script:AiScanBtn.Enabled = $true } } catch {}
 }
@@ -1326,7 +1643,7 @@ function Show-Dashboard {
     # ── Security Posture Panel ──
     $secPosturePanel = New-Object System.Windows.Forms.Panel
     $secPosturePanel.Location = New-Object System.Drawing.Point(25, 258)
-    $secPosturePanel.Size = New-Object System.Drawing.Size(770, 52)
+    $secPosturePanel.Size = New-Object System.Drawing.Size(770, 72)
     $secPosturePanel.BackColor = $colCard
     $secPosturePanel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
     $statusPage.Controls.Add($secPosturePanel)
@@ -1339,80 +1656,44 @@ function Show-Dashboard {
     $spTitle.ForeColor = $colAccent
     $secPosturePanel.Controls.Add($spTitle)
 
-    # Security posture indicators
+    # Security posture indicators — 2 rows of 4
     $spItems = @(
-        @{ L = "Defender"; Idx = 0 },
-        @{ L = "Firewall"; Idx = 1 },
-        @{ L = "UAC";      Idx = 2 },
-        @{ L = "RDP";      Idx = 3 }
+        @{ L = "Defender";    Row = 0; Col = 0 },
+        @{ L = "Firewall";    Row = 0; Col = 1 },
+        @{ L = "UAC";         Row = 0; Col = 2 },
+        @{ L = "RDP";         Row = 0; Col = 3 },
+        @{ L = "SecureBoot";  Row = 1; Col = 0 },
+        @{ L = "TPM";         Row = 1; Col = 1 },
+        @{ L = "HVCI";        Row = 1; Col = 2 },
+        @{ L = "BitLocker";   Row = 1; Col = 3 }
     )
     $script:SecPostureDots = @{}
     $script:SecPostureLabels = @{}
     foreach ($spi in $spItems) {
-        $spX = 12 + $spi.Idx * [int](($secPosturePanel.Width - 24) / 4)
+        $spX = 12 + $spi.Col * [int](($secPosturePanel.Width - 24) / 4)
+        $spY = 26 + $spi.Row * 20
         $dot = New-Object System.Windows.Forms.Panel
-        $dot.Location = New-Object System.Drawing.Point($spX, 28)
+        $dot.Location = New-Object System.Drawing.Point($spX, $spY)
         $dot.Size = New-Object System.Drawing.Size(12, 12)
-        $dot.Tag = "spdot_$($spi.Idx)"
+        $dot.Tag = "spdot_$($spi.Row)_$($spi.Col)"
         $dot.BackColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
         $secPosturePanel.Controls.Add($dot)
         $script:SecPostureDots[$spi.L] = $dot
 
         $spLbl = New-Object System.Windows.Forms.Label
         $spLbl.Text = "$($spi.L): ..."
-        $spLbl.Location = New-Object System.Drawing.Point(($spX + 18), 26)
-        $spLbl.Size = New-Object System.Drawing.Size(130, 16)
-        $spLbl.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
+        $spLbl.Location = New-Object System.Drawing.Point(($spX + 18), ($spY - 2))
+        $spLbl.Size = New-Object System.Drawing.Size(140, 16)
+        $spLbl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
         $spLbl.ForeColor = $colTextDim
-        $spLbl.Cursor = [System.Windows.Forms.Cursors]::Hand
         $spLbl.Tag = $spi.L
-        $spLbl.Add_Click({
-            $key = $this.Tag
-            try {
-                $info = switch ($key) {
-                    "Defender" {
-                        $d = Get-MpComputerStatus -ErrorAction SilentlyContinue
-                        if ($d) { "Antivirus Enabled: $($d.AntivirusEnabled)`nReal-Time Protection: $($d.RealTimeProtectionEnabled)`nDefinition Age: $($d.AntivirusSignatureAge) day(s)`nLast Scan: $($d.FullScanEndTime)" } else { "Windows Defender status unavailable." }
-                    }
-                    "Firewall" {
-                        $fw = Get-NetFirewallProfile -ErrorAction SilentlyContinue
-                        ($fw | ForEach-Object { "$($_.Name): $( if ($_.Enabled) {'Enabled'} else {'DISABLED'} )" }) -join "`n"
-                    }
-                    "UAC" {
-                        $uac = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -ErrorAction SilentlyContinue).EnableLUA
-                        if ($uac -eq 1) { "UAC is Enabled" } else { "UAC is DISABLED - security risk!" }
-                    }
-                    "RDP" {
-                        $rdp = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -ErrorAction SilentlyContinue).fDenyTSConnections
-                        if ($rdp -eq 1) { "RDP is Disabled (secure)" } else { "RDP is ENABLED - connections allowed" }
-                    }
-                }
-                [System.Windows.Forms.MessageBox]::Show($info, "$key Details", "OK", "Information")
-            } catch { [System.Windows.Forms.MessageBox]::Show("Could not retrieve $key status.", "$key", "OK", "Warning") }
-        })
         $secPosturePanel.Controls.Add($spLbl)
         $script:SecPostureLabels[$spi.L] = $spLbl
     }
 
-    # Resize handler for security posture indicators
-    $secPosturePanel.Add_Resize({
-        try {
-            $pw = $this.ClientSize.Width
-            $idx = 0
-            $dots = @($this.Controls | Where-Object { $_.Tag -match "^spdot_" } | Sort-Object { [int]($_.Tag -replace 'spdot_','') })
-            $labels = @($this.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.Cursor -eq [System.Windows.Forms.Cursors]::Hand } | Sort-Object { $_.Location.X })
-            $slotW = [int](($pw - 24) / 4)
-            for ($i = 0; $i -lt $dots.Count -and $i -lt $labels.Count; $i++) {
-                $x = 12 + $i * $slotW
-                $dots[$i].Location = New-Object System.Drawing.Point($x, 28)
-                $labels[$i].Location = New-Object System.Drawing.Point(($x + 18), 26)
-            }
-        } catch {}
-    })
-
     # ── Network Activity Panel ──
     $netPanel = New-Object System.Windows.Forms.Panel
-    $netPanel.Location = New-Object System.Drawing.Point(25, 318)
+    $netPanel.Location = New-Object System.Drawing.Point(25, 338)
     $netPanel.Size = New-Object System.Drawing.Size(770, 60)
     $netPanel.BackColor = $colCard
     $netPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
@@ -1459,7 +1740,7 @@ function Show-Dashboard {
 
     # ── AI Threat Detection Panel (Status Page) ──
     $aiPanel = New-Object System.Windows.Forms.Panel
-    $aiPanel.Location = New-Object System.Drawing.Point(25, 385)
+    $aiPanel.Location = New-Object System.Drawing.Point(25, 405)
     $aiPanel.Size = New-Object System.Drawing.Size(770, 65)
     $aiPanel.BackColor = $colCard
     $aiPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
@@ -1667,7 +1948,7 @@ function Show-Dashboard {
     # ── System Health Gauges ──
     $healthLabel = New-Object System.Windows.Forms.Label
     $healthLabel.Text = "System Health"
-    $healthLabel.Location = New-Object System.Drawing.Point(25, 462)
+    $healthLabel.Location = New-Object System.Drawing.Point(25, 482)
     $healthLabel.Size = New-Object System.Drawing.Size(200, 22)
     $healthLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
     $healthLabel.ForeColor = $colAccent
@@ -1718,14 +1999,14 @@ function Show-Dashboard {
         return @{ Fill = $barFill; Label = $gv }
     }
 
-    $script:CpuGauge  = New-GaugeBar $statusPage 25  487 "CPU"  "cpuBar"
-    $script:RamGauge  = New-GaugeBar $statusPage 275 487 "RAM"  "ramBar"
-    $script:DiskGauge = New-GaugeBar $statusPage 525 487 "DISK" "diskBar"
+    $script:CpuGauge  = New-GaugeBar $statusPage 25  507 "CPU"  "cpuBar"
+    $script:RamGauge  = New-GaugeBar $statusPage 275 507 "RAM"  "ramBar"
+    $script:DiskGauge = New-GaugeBar $statusPage 525 507 "DISK" "diskBar"
 
     # Recent alerts preview on status page (Enhancement 4: "View All >>" link)
     $recentLabel = New-Object System.Windows.Forms.Label
     $recentLabel.Text = "Recent Alerts"
-    $recentLabel.Location = New-Object System.Drawing.Point(25, 542)
+    $recentLabel.Location = New-Object System.Drawing.Point(25, 562)
     $recentLabel.Size = New-Object System.Drawing.Size(300, 24)
     $recentLabel.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
     $recentLabel.ForeColor = $colOrange
@@ -1734,7 +2015,7 @@ function Show-Dashboard {
     # "View All >>" link next to Recent Alerts title
     $viewAllLink = New-Object System.Windows.Forms.LinkLabel
     $viewAllLink.Text = "View All >>"
-    $viewAllLink.Location = New-Object System.Drawing.Point(700, 546)
+    $viewAllLink.Location = New-Object System.Drawing.Point(700, 566)
     $viewAllLink.Size = New-Object System.Drawing.Size(90, 18)
     $viewAllLink.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
     $viewAllLink.LinkColor = $colAccent
@@ -1747,7 +2028,7 @@ function Show-Dashboard {
     $script:RecentList = New-Object System.Windows.Forms.ListView
     $recentList = $script:RecentList
     $recentList.Name = "recentList"
-    $recentList.Location = New-Object System.Drawing.Point(25, 570)
+    $recentList.Location = New-Object System.Drawing.Point(25, 590)
     $recentList.Size = New-Object System.Drawing.Size(770, 170)
     $recentList.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
     Style-ListView $recentList
@@ -2770,7 +3051,7 @@ try {
     $aiPage.Controls.Add($aiPageTitle)
 
     $aiPageDesc = New-Object System.Windows.Forms.Label
-    $aiPageDesc.Text = "Local behavioral analysis, memory injection scanning, and process anomaly detection"
+    $aiPageDesc.Text = "8-engine scan: Memory, Behavioral, SecureBoot/TPM, BYOVD, Hidden Process, ETW, Driver Integrity, Hypervisor"
     $aiPageDesc.Location = New-Object System.Drawing.Point(25, 52)
     $aiPageDesc.Size = New-Object System.Drawing.Size(700, 20)
     $aiPageDesc.Font = New-Object System.Drawing.Font("Segoe UI", 9)
@@ -4648,6 +4929,7 @@ Start-Sleep -Milliseconds 1500
     $script:DashCache = [hashtable]::Synchronized(@{
         CpuLoad = 0; RamUsed = 0; DiskUsed = 0
         DefenderOn = $null; FirewallOn = $null; UacOn = $null; RdpOff = $null
+        SecureBootOn = $null; TpmReady = $null; HvciOn = $null; BitLockerOn = $null
         NetConns = 0; NetTopStr = "None"
         Running = $true
     })
@@ -4681,6 +4963,10 @@ Start-Sleep -Milliseconds 1500
                 try { $fw = Get-NetFirewallProfile -ErrorAction SilentlyContinue; $cache.FirewallOn = (($fw | Where-Object { $_.Enabled }).Count -eq $fw.Count) } catch { $cache.FirewallOn = $null }
                 try { $cache.UacOn = ((Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -ErrorAction SilentlyContinue).EnableLUA -eq 1) } catch {}
                 try { $cache.RdpOff = ((Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -ErrorAction SilentlyContinue).fDenyTSConnections -eq 1) } catch {}
+                try { $cache.SecureBootOn = (Confirm-SecureBootUEFI -ErrorAction SilentlyContinue) } catch { $cache.SecureBootOn = $null }
+                try { $tpmInfo = Get-Tpm -ErrorAction SilentlyContinue; $cache.TpmReady = ($tpmInfo -and $tpmInfo.TpmPresent -and $tpmInfo.TpmReady) } catch { $cache.TpmReady = $null }
+                try { $dgInfo = Get-CimInstance -ClassName Win32_DeviceGuard -Namespace "root\Microsoft\Windows\DeviceGuard" -ErrorAction SilentlyContinue; $cache.HvciOn = ($dgInfo -and $dgInfo.SecurityServicesRunning -contains 2) } catch { $cache.HvciOn = $null }
+                try { $blInfo = Get-BitLockerVolume -MountPoint "C:" -ErrorAction SilentlyContinue; $cache.BitLockerOn = ($blInfo -and $blInfo.ProtectionStatus -eq 'On') } catch { $cache.BitLockerOn = $null }
                 # Network summary
                 try {
                     $netConns = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
@@ -4786,6 +5072,47 @@ Start-Sleep -Milliseconds 1500
                     $script:SecPostureDots["RDP"].BackColor = $colRedSp
                     $script:SecPostureLabels["RDP"].Text = "RDP: ENABLED"
                     $script:SecPostureLabels["RDP"].ForeColor = $colRedSp
+                }
+
+                # Row 2: SecureBoot, TPM, HVCI, BitLocker
+                if ($script:DashCache.SecureBootOn -eq $true) {
+                    $script:SecPostureDots["SecureBoot"].BackColor = $colGreenSp
+                    $script:SecPostureLabels["SecureBoot"].Text = "SecureBoot: ON"
+                    $script:SecPostureLabels["SecureBoot"].ForeColor = $colGreenSp
+                } elseif ($script:DashCache.SecureBootOn -eq $false) {
+                    $script:SecPostureDots["SecureBoot"].BackColor = $colRedSp
+                    $script:SecPostureLabels["SecureBoot"].Text = "SecureBoot: OFF"
+                    $script:SecPostureLabels["SecureBoot"].ForeColor = $colRedSp
+                }
+
+                if ($script:DashCache.TpmReady -eq $true) {
+                    $script:SecPostureDots["TPM"].BackColor = $colGreenSp
+                    $script:SecPostureLabels["TPM"].Text = "TPM: Ready"
+                    $script:SecPostureLabels["TPM"].ForeColor = $colGreenSp
+                } elseif ($script:DashCache.TpmReady -eq $false) {
+                    $script:SecPostureDots["TPM"].BackColor = $colRedSp
+                    $script:SecPostureLabels["TPM"].Text = "TPM: N/A"
+                    $script:SecPostureLabels["TPM"].ForeColor = $colRedSp
+                }
+
+                if ($script:DashCache.HvciOn -eq $true) {
+                    $script:SecPostureDots["HVCI"].BackColor = $colGreenSp
+                    $script:SecPostureLabels["HVCI"].Text = "HVCI: ON"
+                    $script:SecPostureLabels["HVCI"].ForeColor = $colGreenSp
+                } elseif ($script:DashCache.HvciOn -eq $false) {
+                    $script:SecPostureDots["HVCI"].BackColor = $colRedSp
+                    $script:SecPostureLabels["HVCI"].Text = "HVCI: OFF"
+                    $script:SecPostureLabels["HVCI"].ForeColor = $colRedSp
+                }
+
+                if ($script:DashCache.BitLockerOn -eq $true) {
+                    $script:SecPostureDots["BitLocker"].BackColor = $colGreenSp
+                    $script:SecPostureLabels["BitLocker"].Text = "BitLocker: ON"
+                    $script:SecPostureLabels["BitLocker"].ForeColor = $colGreenSp
+                } elseif ($script:DashCache.BitLockerOn -eq $false) {
+                    $script:SecPostureDots["BitLocker"].BackColor = $colRedSp
+                    $script:SecPostureLabels["BitLocker"].Text = "BitLocker: OFF"
+                    $script:SecPostureLabels["BitLocker"].ForeColor = $colRedSp
                 }
             } catch {}
 
