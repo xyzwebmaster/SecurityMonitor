@@ -3180,7 +3180,7 @@ try {
         'PF_BlockMalware'   = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) {{ $h -match "SecurityMonitor-Malware-Start" }} else {{ $h -notmatch "SecurityMonitor-Malware-Start" }}'
         'PF_BlockTelemetry' = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) {{ $h -match "SecurityMonitor-Telemetry-Start" }} else {{ $h -notmatch "SecurityMonitor-Telemetry-Start" }}'
         'PF_BlockDNSBypass' = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_DNSLock_Out" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
-        'DNS_DoH'           = 'if ({0}) {{ $adapters = Get-NetAdapter | Where-Object {{ $_.Status -eq "Up" -and $_.Virtual -eq $false }}; $ok = $false; foreach ($a in $adapters) {{ $dohPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($a.InterfaceGuid)\DohInterfaceSettings\Doh"; if (Test-Path $dohPath) {{ $children = Get-ChildItem $dohPath -EA SilentlyContinue; if ($children.Count -gt 0) {{ $ok = $true; break }} }} }}; $ok }} else {{ $adapters = Get-NetAdapter | Where-Object {{ $_.Status -eq "Up" -and $_.Virtual -eq $false }}; $clean = $true; foreach ($a in $adapters) {{ $dohPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($a.InterfaceGuid)\DohInterfaceSettings\Doh"; if (Test-Path $dohPath) {{ $children = Get-ChildItem $dohPath -EA SilentlyContinue; if ($children.Count -gt 0) {{ $clean = $false; break }} }} }}; $clean }}'
+        'DNS_DoH'           = 'if ({0}) {{ $ok = $false; foreach ($a in (Get-NetAdapter | Where-Object {{ $_.Status -eq "Up" -and $_.Virtual -eq $false }})) {{ $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey("SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($a.InterfaceGuid)\DohInterfaceSettings\Doh"); if ($k) {{ $n = $k.GetSubKeyNames(); $k.Close(); if ($n.Count -gt 0) {{ $ok = $true; break }} }} }}; $ok }} else {{ $clean = $true; foreach ($a in (Get-NetAdapter | Where-Object {{ $_.Status -eq "Up" -and $_.Virtual -eq $false }})) {{ $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey("SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($a.InterfaceGuid)\DohInterfaceSettings\Doh"); if ($k) {{ $n = $k.GetSubKeyNames(); $k.Close(); if ($n.Count -gt 0) {{ $clean = $false; break }} }} }}; $clean }}'
         'DNS_Provider'      = ''
     }
 
@@ -3885,7 +3885,16 @@ if (-not `$a) { `$false; return }
                         }
                         if ($d.ErrorLabel) { $d.ErrorLabel.Text = "" }
                         if ($d.DohCb) {
-                            if ($d.ProvName -eq 'None') { $d.DohCb.Checked = $false; $d.DohCb.Enabled = $false } else { $d.DohCb.Enabled = $true }
+                            if ($d.ProvName -eq 'None') { $d.DohCb.Checked = $false; $d.DohCb.Enabled = $false }
+                            else {
+                                $d.DohCb.Enabled = $true
+                                # Re-apply DoH if it was active (DNS changed, DoH needs new provider IPs)
+                                if ($d.DohCb.Checked) {
+                                    Write-Console "[DNS_Provider] DoH is active, re-applying for new provider..." "INFO"
+                                    try { $script:SuppressSettingsSave = $true; $d.DohCb.Checked = $false } finally { $script:SuppressSettingsSave = $false }
+                                    $d.DohCb.Checked = $true
+                                }
+                            }
                         }
                         Write-Console "[DNS_Provider] Verified: $($d.ProvName)" "OK"
                     } elseif ($result -match '^SUCCESS') {
@@ -3896,7 +3905,15 @@ if (-not `$a) { `$false; return }
                         if ($d.Dot) { $d.Dot.BackColor = $d.ColorOrange }
                         if ($d.ErrorLabel) { $d.ErrorLabel.Text = "DNS applied but verification pending" }
                         if ($d.DohCb) {
-                            if ($d.ProvName -eq 'None') { $d.DohCb.Checked = $false; $d.DohCb.Enabled = $false } else { $d.DohCb.Enabled = $true }
+                            if ($d.ProvName -eq 'None') { $d.DohCb.Checked = $false; $d.DohCb.Enabled = $false }
+                            else {
+                                $d.DohCb.Enabled = $true
+                                if ($d.DohCb.Checked) {
+                                    Write-Console "[DNS_Provider] DoH is active, re-applying for new provider..." "INFO"
+                                    $d.DohCb.Checked = $false
+                                    $d.DohCb.Checked = $true
+                                }
+                            }
                         }
                         Write-Console "[DNS_Provider] Applied but verify failed" "WARN"
                     } else {
@@ -3996,23 +4013,40 @@ if (-not `$a) { `$false; return }
                 $pri6 = if ($dnsInfo) { $dnsInfo.Primary6 } else { '' }
                 $sec6 = if ($dnsInfo) { $dnsInfo.Secondary6 } else { '' }
                 $elevatedScript = @"
-# Register DoH templates via netsh for all IPs (IPv4 + IPv6)
 `$allServers = @('$pri','$sec','$pri6','$sec6') | Where-Object { `$_ }
+
+# Register DoH server templates via Windows API (handles both IPv4 and IPv6)
 foreach (`$srv in `$allServers) {
-    & netsh dns add encryption server=`$srv dohtemplate='$dohTemplate' autoupgrade=yes udpfallback=no 2>&1 | Out-Null
+    try {
+        `$existing = Get-DnsClientDohServerAddress -ServerAddress `$srv -ErrorAction SilentlyContinue
+        if (`$existing) {
+            Set-DnsClientDohServerAddress -ServerAddress `$srv -DohTemplate '$dohTemplate' -AllowFallbackToUdp `$false -AutoUpgrade `$true -ErrorAction Stop
+        } else {
+            Add-DnsClientDohServerAddress -ServerAddress `$srv -DohTemplate '$dohTemplate' -AllowFallbackToUdp `$false -AutoUpgrade `$true -ErrorAction Stop
+        }
+    } catch {}
 }
 
-# Set DNS addresses (v4+v6 merged — Windows applies each to correct address family)
 `$adapters = Get-NetAdapter | Where-Object { `$_.Status -eq 'Up' -and `$_.Virtual -eq `$false }
 foreach (`$adapter in `$adapters) {
+    # Set DNS addresses
     try { Set-DnsClientServerAddress -InterfaceIndex `$adapter.ifIndex -ServerAddresses `$allServers -ErrorAction Stop } catch {}
 
-    # DohFlags=1 per IP via .NET Registry API (PowerShell path parsing breaks on IPv6 colons)
+    # Clean old DoH entries first, then write fresh ones for current provider only
     `$guid = `$adapter.InterfaceGuid
-    `$regBase = "SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\`$guid\DohInterfaceSettings\Doh"
+    `$regBase = "SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\`$guid\DohInterfaceSettings"
+    `$dohKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey("`$regBase\Doh", `$true)
+    if (`$dohKey) {
+        foreach (`$old in `$dohKey.GetSubKeyNames()) { try { `$dohKey.DeleteSubKeyTree(`$old) } catch {} }
+        `$dohKey.Close()
+    }
+
+    # Write DohFlags=1 + DohTemplate for each current server IP
+    `$regDoh = "`$regBase\Doh"
     foreach (`$srv in `$allServers) {
-        `$subKey = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey("`$regBase\`$srv")
+        `$subKey = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey("`$regDoh\`$srv")
         `$subKey.SetValue('DohFlags', [long]1, [Microsoft.Win32.RegistryValueKind]::QWord)
+        `$subKey.SetValue('DohTemplate', '$dohTemplate', [Microsoft.Win32.RegistryValueKind]::String)
         `$subKey.Close()
     }
 }
@@ -4135,15 +4169,16 @@ Start-Sleep -Milliseconds 1500
                 $results['FW_BlockDevices'] = ($null -ne $devRule) -or $llmnrDisabled -or $ssdpDisabled
             } catch {}
             try {
-                # Check per-adapter DoH flags (same as Windows Settings reads)
+                # Check per-adapter DoH flags via .NET Registry API (Get-ChildItem breaks on IPv6 colons)
                 $adapterDoH = $false
                 $physAdapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false }
                 foreach ($pa in $physAdapters) {
-                    $dohBase = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($pa.InterfaceGuid)\DohInterfaceSettings\Doh"
-                    $dohKeys = Get-ChildItem -LiteralPath $dohBase -ErrorAction SilentlyContinue
-                    if ($dohKeys -and @($dohKeys).Count -gt 0) {
-                        $adapterDoH = $true
-                        break
+                    $regPath = "SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($pa.InterfaceGuid)\DohInterfaceSettings\Doh"
+                    $regKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($regPath)
+                    if ($regKey) {
+                        $subKeys = $regKey.GetSubKeyNames()
+                        $regKey.Close()
+                        if ($subKeys.Count -gt 0) { $adapterDoH = $true; break }
                     }
                 }
                 $results['DNS_DoH'] = $adapterDoH
@@ -4190,10 +4225,9 @@ Start-Sleep -Milliseconds 1500
                     Remove-Job -Job $script:FWStatusJob -Force -ErrorAction SilentlyContinue
                     $script:FWStatusJob = $null
                     $script:FWRetryCount = @{}
-                    # Preserve active pending operations so in-flight changes aren't overwritten
-                    $activePending = @($script:FWPendingOps.Keys | Where-Object { $script:FWPendingOps[$_] })
-                    $script:FWPendingOps = @{}
-                    foreach ($pk in $activePending) { $script:FWPendingOps[$pk] = $true }
+                    # Clear completed pending ops (don't replace hashtable — callbacks hold references)
+                    $keysToRemove = @($script:FWPendingOps.Keys | Where-Object { -not $script:FWPendingOps[$_] })
+                    foreach ($k in $keysToRemove) { $script:FWPendingOps.Remove($k) }
                     if ($statusResults -is [hashtable]) {
                         try {
                             $script:SuppressSettingsSave = $true
