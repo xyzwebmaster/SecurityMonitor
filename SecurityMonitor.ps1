@@ -339,13 +339,52 @@ $script:AiThreatHistory = [System.Collections.ArrayList]@()
 $script:AiThreatCount = 0
 $script:AiScanRunning = $false
 $script:AiLastScanTime = $null
-$script:HollowsHunterPath = Join-Path $PSScriptRoot "Tools\hollows_hunter.exe"
 $script:AiToolsDir = Join-Path $PSScriptRoot "Tools"
 
 # ============================================================================
 #  AI THREAT DETECTION ENGINE (fully local - no cloud)
-#  Uses: HollowsHunter (memory injection scanner) + PowerShell behavioral heuristics
+#  Uses: PowerShell Memory Scanner (P/Invoke) + Behavioral Heuristics
 # ============================================================================
+
+# P/Invoke definitions for memory scanning
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public struct MEMORY_BASIC_INFORMATION
+{
+    public IntPtr BaseAddress;
+    public IntPtr AllocationBase;
+    public uint AllocationProtect;
+    public IntPtr RegionSize;
+    public uint State;
+    public uint Protect;
+    public uint Type;
+}
+
+public static class MemScanNative
+{
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern int VirtualQueryEx(IntPtr hProcess, IntPtr lpAddress, out MEMORY_BASIC_INFORMATION lpBuffer, uint dwLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool CloseHandle(IntPtr hObject);
+
+    public const uint PROCESS_QUERY_INFORMATION = 0x0400;
+    public const uint PROCESS_VM_READ = 0x0010;
+    public const uint PAGE_EXECUTE_READWRITE = 0x40;
+    public const uint PAGE_EXECUTE_READ = 0x20;
+    public const uint PAGE_EXECUTE_WRITECOPY = 0x80;
+    public const uint PAGE_EXECUTE = 0x10;
+    public const uint MEM_COMMIT = 0x1000;
+    public const uint MEM_PRIVATE = 0x20000;
+    public const uint MEM_IMAGE = 0x1000000;
+}
+"@ -ErrorAction SilentlyContinue
 
 function Add-AiThreat {
     param([string]$Engine, [string]$Risk, [string]$ProcessName, [string]$Finding, [hashtable]$Details = @{})
@@ -392,56 +431,145 @@ function Start-AiThreatScan {
     } catch {}
 
     $findings = [System.Collections.ArrayList]@()
-    $hhPath = $script:HollowsHunterPath
 
-    # ── ENGINE 1: HollowsHunter (memory injection scanner) ──
-    $hhAvailable = Test-Path $hhPath
-    if ($hhAvailable) {
+    # ── ENGINE 1: Memory Scanner (pure PowerShell P/Invoke) ──
+    $jitProcesses = @('java','javaw','node','msedge','chrome','firefox','chromium','opera','brave')
+
+    # Build self-exclusion set (reused by both engines)
+    $selfPids = [System.Collections.Generic.HashSet[int]]::new()
+    [void]$selfPids.Add($PID)
+    try {
+        $curPidE = $PID
+        for ($i = 0; $i -lt 5; $i++) {
+            $parentE = Get-CimInstance Win32_Process -Filter "ProcessId = $curPidE" -ErrorAction SilentlyContinue
+            if (-not $parentE -or $parentE.ParentProcessId -le 4) { break }
+            [void]$selfPids.Add($parentE.ParentProcessId)
+            $curPidE = $parentE.ParentProcessId
+        }
+    } catch {}
+
+    $scanProcs = Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Id -gt 4 -and -not $selfPids.Contains($_.Id)
+    }
+
+    foreach ($sp in $scanProcs) {
+        $isJit = $jitProcesses -contains $sp.ProcessName.ToLower()
+        $isClr = $false
+        try { $isClr = ($sp.Modules | Where-Object { $_.ModuleName -match '^clrjit' }).Count -gt 0 } catch {}
+
+        $hProc = [MemScanNative]::OpenProcess(
+            [MemScanNative]::PROCESS_QUERY_INFORMATION -bor [MemScanNative]::PROCESS_VM_READ,
+            $false, $sp.Id)
+        if ($hProc -eq [IntPtr]::Zero) { continue }
+
         try {
-            $outDir = Join-Path $env:TEMP "hh_scan_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-            New-Item -ItemType Directory -Path $outDir -Force | Out-Null
-            $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = $hhPath
-            $psi.Arguments = "/json /quiet /dir `"$outDir`""
-            $psi.UseShellExecute = $false
-            $psi.RedirectStandardOutput = $true
-            $psi.RedirectStandardError = $true
-            $psi.CreateNoWindow = $true
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            $proc.WaitForExit(120000)
-            if (-not $proc.HasExited) { try { $proc.Kill() } catch {} }
+            $addr = [IntPtr]::Zero
+            $mbi = New-Object MEMORY_BASIC_INFORMATION
+            $mbiSize = [uint32][Runtime.InteropServices.Marshal]::SizeOf($mbi)
+            $rwxCount = 0
+            $unbackedExecCount = 0
 
-            $scanJson = Join-Path $outDir "scan_report.json"
-            if (Test-Path $scanJson) {
-                $report = Get-Content $scanJson -Raw | ConvertFrom-Json
-                if ($report.scanned) {
-                    foreach ($s in $report.scanned) {
-                        if ($s.is_managed -or $s.replaced -or $s.hdr_mod -or $s.iat_hooked -or $s.implanted -or $s.unreachable_file -or $s.patched) {
-                            $suspTypes = @()
-                            if ($s.replaced)         { $suspTypes += "Replaced/Hollowed" }
-                            if ($s.hdr_mod)          { $suspTypes += "Header Modified" }
-                            if ($s.iat_hooked)       { $suspTypes += "IAT Hooked" }
-                            if ($s.implanted)        { $suspTypes += "Code Implanted" }
-                            if ($s.patched)          { $suspTypes += "Memory Patched" }
-                            if ($s.unreachable_file) { $suspTypes += "Unreachable File" }
-                            $risk = if ($s.replaced -or $s.implanted) { "CRIT" } elseif ($s.iat_hooked -or $s.hdr_mod) { "HIGH" } else { "MED" }
-                            $pName = try { (Get-Process -Id $s.pid -ErrorAction SilentlyContinue).ProcessName } catch { "PID:$($s.pid)" }
-                            if (-not $pName) { $pName = "PID:$($s.pid)" }
-                            [void]$findings.Add(@{
-                                Engine = "HollowsHunter"; Risk = $risk; Process = $pName
-                                Finding = "Memory anomaly: $($suspTypes -join ', ')"
-                                Details = [ordered]@{
-                                    "PID" = "$($s.pid)"; "Process" = $pName
-                                    "Detection" = ($suspTypes -join ", ")
-                                    "Scanned Modules" = "$($s.scanned)"; "Suspicious Modules" = "$($s.suspicious)"
-                                    "Analysis" = "Process memory differs from disk image - possible injection or tampering"
-                                }
-                            })
-                        }
+            while ([MemScanNative]::VirtualQueryEx($hProc, $addr, [ref]$mbi, $mbiSize) -ne 0) {
+                $regionSize = $mbi.RegionSize.ToInt64()
+                if ($regionSize -le 0) { break }
+
+                if ($mbi.State -eq [MemScanNative]::MEM_COMMIT) {
+                    # Check 1: RWX Memory (shellcode staging)
+                    if ($mbi.Protect -eq [MemScanNative]::PAGE_EXECUTE_READWRITE -and
+                        $regionSize -ge 4096 -and -not $isJit -and -not $isClr) {
+                        $rwxCount++
+                    }
+                    # Check 2: Unbacked executable memory (injected code)
+                    $isExec = ($mbi.Protect -band 0xF0) -ne 0
+                    if ($isExec -and $mbi.Type -eq [MemScanNative]::MEM_PRIVATE -and $regionSize -ge 4096 -and -not $isJit) {
+                        $unbackedExecCount++
+                    }
+                }
+
+                $nextAddr = $mbi.BaseAddress.ToInt64() + $regionSize
+                if ($nextAddr -le $addr.ToInt64()) { break }
+                $addr = [IntPtr]$nextAddr
+            }
+
+            if ($rwxCount -gt 0) {
+                [void]$findings.Add(@{
+                    Engine = "MemScanner"; Risk = "HIGH"; Process = $sp.ProcessName
+                    Finding = "RWX memory detected: $rwxCount region(s) with PAGE_EXECUTE_READWRITE"
+                    Details = [ordered]@{
+                        "PID" = "$($sp.Id)"; "Process" = $sp.ProcessName
+                        "Detection" = "RWX Memory Regions"
+                        "RWX Regions" = "$rwxCount"; "Min Region Size" = "4KB"
+                        "Analysis" = "Writable+executable memory is a common shellcode staging indicator"
+                    }
+                })
+            }
+            if ($unbackedExecCount -gt 0) {
+                [void]$findings.Add(@{
+                    Engine = "MemScanner"; Risk = "CRIT"; Process = $sp.ProcessName
+                    Finding = "Unbacked executable memory: $unbackedExecCount private executable region(s)"
+                    Details = [ordered]@{
+                        "PID" = "$($sp.Id)"; "Process" = $sp.ProcessName
+                        "Detection" = "Unbacked Executable Memory"
+                        "Regions" = "$unbackedExecCount"
+                        "Analysis" = "MEM_PRIVATE executable regions not backed by a file - likely injected code"
+                    }
+                })
+            }
+        } finally {
+            [MemScanNative]::CloseHandle($hProc) | Out-Null
+        }
+    }
+
+    # Check 3: Suspicious DLL paths (loaded from temp/user dirs)
+    foreach ($sp in $scanProcs) {
+        try {
+            foreach ($mod in $sp.Modules) {
+                $modPath = $mod.FileName
+                if (-not $modPath) { continue }
+                $lp = $modPath.ToLower()
+                if ($lp -match '\\(temp|tmp)\\' -or $lp -match '\\appdata\\' -or $lp -match '\\downloads\\') {
+                    $isSigned = $false
+                    try { $sig = Get-AuthenticodeSignature $modPath -ErrorAction SilentlyContinue; $isSigned = $sig.Status -eq 'Valid' } catch {}
+                    if (-not $isSigned) {
+                        [void]$findings.Add(@{
+                            Engine = "MemScanner"; Risk = "MED"; Process = $sp.ProcessName
+                            Finding = "Unsigned DLL loaded from suspicious path: $modPath"
+                            Details = [ordered]@{
+                                "PID" = "$($sp.Id)"; "Process" = $sp.ProcessName
+                                "Detection" = "Suspicious DLL Path"
+                                "Module" = $modPath; "Signed" = "No"
+                                "Analysis" = "Unsigned module loaded from temp/user directory - possible DLL side-loading"
+                            }
+                        })
                     }
                 }
             }
-            try { Remove-Item $outDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+        } catch {}
+    }
+
+    # Check 4: Hollowed main module (image size mismatch)
+    foreach ($sp in $scanProcs) {
+        try {
+            $exePath = $sp.MainModule.FileName
+            if (-not $exePath -or -not (Test-Path $exePath)) { continue }
+            $diskSize = (Get-Item $exePath -ErrorAction SilentlyContinue).Length
+            $memSize = $sp.MainModule.ModuleMemorySize
+            if ($diskSize -gt 0 -and $memSize -gt 0) {
+                $ratio = [math]::Abs($memSize - $diskSize) / $diskSize
+                if ($ratio -gt 1.5) {
+                    [void]$findings.Add(@{
+                        Engine = "MemScanner"; Risk = "CRIT"; Process = $sp.ProcessName
+                        Finding = "Possible process hollowing: memory/disk image size ratio $([math]::Round($ratio,2))x"
+                        Details = [ordered]@{
+                            "PID" = "$($sp.Id)"; "Process" = $sp.ProcessName
+                            "Detection" = "Process Hollowing Suspect"
+                            "Disk Size" = "$diskSize bytes"; "Memory Size" = "$memSize bytes"
+                            "Size Ratio" = "$([math]::Round($ratio,2))x"
+                            "Analysis" = "Process image in memory differs significantly from on-disk size - possible hollowing"
+                        }
+                    })
+                }
+            }
         } catch {}
     }
 
@@ -669,9 +797,7 @@ function Start-AiThreatScan {
     }
 
     $script:AiLastScanTime = Get-Date
-    $statusText = "Last scan: $(Get-Date -Format 'HH:mm:ss') | Engines: Behavioral Analysis"
-    if ($hhAvailable) { $statusText += " + HollowsHunter" }
-    $statusText += " | Findings: $($findings.Count)"
+    $statusText = "Last scan: $(Get-Date -Format 'HH:mm:ss') | Engines: Memory Scanner + Behavioral Analysis | Findings: $($findings.Count)"
 
     try { if ($script:AiScanStatusLabel) { $script:AiScanStatusLabel.Text = $statusText } } catch {}
     try { if ($script:AiStatusLabel) { $script:AiStatusLabel.Text = $statusText } } catch {}
@@ -680,10 +806,6 @@ function Start-AiThreatScan {
         try { if ($script:AiCountLabel) { $script:AiCountLabel.Text = "No threats detected"; $script:AiCountLabel.ForeColor = [System.Drawing.Color]::FromArgb(0, 200, 100) } } catch {}
     } else {
         try { if ($script:AiCountLabel) { $script:AiCountLabel.Text = "$($script:AiThreatCount) threat(s) detected"; $script:AiCountLabel.ForeColor = [System.Drawing.Color]::FromArgb(255, 80, 90) } } catch {}
-    }
-
-    if (-not $hhAvailable) {
-        try { if ($script:AiScanStatusLabel) { $script:AiScanStatusLabel.Text += "  [HollowsHunter not found - place hollows_hunter.exe in Tools\ for memory scanning]" } } catch {}
     }
 
     $script:AiScanRunning = $false
