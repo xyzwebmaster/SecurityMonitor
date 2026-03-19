@@ -383,7 +383,6 @@ function Add-AiThreat {
 
 function Start-AiThreatScan {
     if ($script:AiScanRunning) { return }
-    if (-not $script:AiFeatureEnabled) { return }
     $script:AiScanRunning = $true
 
     try {
@@ -1011,12 +1010,8 @@ function Show-Dashboard {
         }
     }
 
-    # Hide AI Threats tab if not enabled in config
-    $aiEnabledProp = $script:NotifyConfig.PSObject.Properties["EnableAiDetection"]
-    $script:AiFeatureEnabled = if ($null -eq $aiEnabledProp) { $false } else { $aiEnabledProp.Value -eq $true }
-    foreach ($nb in $navButtons) {
-        if ($nb.Tag -eq "AI Threats") { $nb.Visible = $script:AiFeatureEnabled }
-    }
+    # AI Threats tab always visible (scan is on-demand from the tab itself)
+    $script:AiFeatureEnabled = $true
     & $script:RepositionNavButtons
 
     # ═══════════════════════════════════════════════════════════════
@@ -1405,7 +1400,7 @@ function Show-Dashboard {
     $script:AiScanBtn.Add_Click({ try { Start-AiThreatScan } catch {} })
     $aiPanel.Controls.Add($script:AiScanBtn)
     $script:AiStatusPanel = $aiPanel
-    $aiPanel.Visible = $script:AiFeatureEnabled
+    $aiPanel.Visible = $true
 
     # ── Modern ListView styling helper ──
     # Applies dark OwnerDraw theme with custom header, row highlights, no grid lines
@@ -3099,120 +3094,11 @@ try {
     })
     $sy += 52
 
-    # ── AI Threat Detection toggle ──
-    $aiCard = New-Object System.Windows.Forms.Panel
-    $aiCard.Location = New-Object System.Drawing.Point(25, $sy)
-    $aiCard.Size = New-Object System.Drawing.Size(770, 48)
-    $aiCard.BackColor = $colCard
-    $aiCard.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
-    $settingsPage.Controls.Add($aiCard)
-
-    $aiSettingsIcon = New-Object System.Windows.Forms.Label
-    $aiSettingsIcon.Text = "[AI]"
-    $aiSettingsIcon.Location = New-Object System.Drawing.Point(10, 5)
-    $aiSettingsIcon.Size = New-Object System.Drawing.Size(40, 20)
-    $aiSettingsIcon.Font = New-Object System.Drawing.Font("Consolas", 9, [System.Drawing.FontStyle]::Bold)
-    $aiSettingsIcon.ForeColor = [System.Drawing.Color]::FromArgb(180, 120, 255)
-    $aiCard.Controls.Add($aiSettingsIcon)
-
-    $aiCb = New-Object System.Windows.Forms.CheckBox
-    $aiCb.Text = "AI Threat Detection"
-    $aiCb.Location = New-Object System.Drawing.Point(55, 4)
-    $aiCb.Size = New-Object System.Drawing.Size(350, 22)
-    $aiCb.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-    $aiCb.ForeColor = $colTextMain
-    $aiCb.BackColor = $colCard
-    $propAi = $script:NotifyConfig.PSObject.Properties["EnableAiDetection"]
-    $aiCb.Checked = if ($null -eq $propAi) { $false } else { $propAi.Value -eq $true }
-    $aiCard.Controls.Add($aiCb)
-
-    $aiSettingsDescLbl = New-Object System.Windows.Forms.Label
-    $aiSettingsDescLbl.Text = "Local behavioral analysis, memory scanning, and process anomaly detection. Adds AI Threats tab when enabled."
-    $aiCard.Size = New-Object System.Drawing.Size(770, 62)
-    $aiSettingsDescLbl.Location = New-Object System.Drawing.Point(55, 27)
-    $aiSettingsDescLbl.Size = New-Object System.Drawing.Size(700, 17)
-    $aiSettingsDescLbl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-    $aiSettingsDescLbl.ForeColor = $colTextDim
-    $aiSettingsDescLbl.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
-    $aiCard.Controls.Add($aiSettingsDescLbl)
-
-    $aiWarnLbl = New-Object System.Windows.Forms.Label
-    $aiWarnLbl.Text = "Warning: This feature uses significant CPU and disk resources during scans. Scans run every 5 minutes."
-    $aiWarnLbl.Location = New-Object System.Drawing.Point(55, 43)
-    $aiWarnLbl.Size = New-Object System.Drawing.Size(700, 15)
-    $aiWarnLbl.Font = New-Object System.Drawing.Font("Segoe UI", 7.5, [System.Drawing.FontStyle]::Italic)
-    $aiWarnLbl.ForeColor = [System.Drawing.Color]::FromArgb(255, 170, 80)
-    $aiWarnLbl.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
-    $aiCard.Controls.Add($aiWarnLbl)
-
-    $aiCb.Tag = "EnableAiDetection"
-    $aiCb.Add_CheckedChanged({
-        try {
-            $senderCb = $this
-            $cfgKey = $senderCb.Tag
-            $script:NotifyConfig | Add-Member -MemberType NoteProperty -Name $cfgKey -Value $senderCb.Checked -Force
-            if (-not $script:SuppressSettingsSave) {
-                $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $script:ConfigFilePath -Encoding UTF8
-            }
-            # Show/hide AI Threats tab, nav button, and status panel
-            $aiEnabled = $senderCb.Checked
-            $script:AiFeatureEnabled = $aiEnabled
-            try {
-                $script:Pages["AI Threats"].Visible = $aiEnabled -and ($script:CurrentPage -eq "AI Threats")
-                foreach ($nb in $script:NavButtons) {
-                    if ($nb.Tag -eq "AI Threats") {
-                        $nb.Visible = $aiEnabled
-                    }
-                }
-                & $script:RepositionNavButtons
-                # Show/hide AI panel on Status page
-                if ($script:AiStatusPanel) { $script:AiStatusPanel.Visible = $aiEnabled }
-                # If AI was just disabled and we're on that page, switch away
-                if (-not $aiEnabled -and $script:CurrentPage -eq "AI Threats") {
-                    & $script:SwitchPageFn "Status"
-                }
-                # AI scans are manual-only — no auto-scan on toggle or periodic timer
-            } catch {}
-        } catch {}
-    })
-    $sy += 66
-
-    # Select All / Deselect All buttons
-    $selAllBtn = New-Object System.Windows.Forms.Button
-    $selAllBtn.Text = "Select All"
-    $selAllBtn.Location = New-Object System.Drawing.Point(25, ($sy + 10))
-    $selAllBtn.Size = New-Object System.Drawing.Size(120, 34)
-    $selAllBtn.FlatStyle = "Flat"
-    $selAllBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
-    $selAllBtn.ForeColor = $colTextMain
-    $selAllBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $selAllBtn.Add_Click({
-        $script:SuppressSettingsSave = $true
-        foreach ($c in $script:SettingsCheckboxes.Values) { $c.Checked = $true }
-        $script:SuppressSettingsSave = $false
-        $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $script:ConfigFilePath -Encoding UTF8
-    })
-    $settingsPage.Controls.Add($selAllBtn)
-
-    $deselAllBtn = New-Object System.Windows.Forms.Button
-    $deselAllBtn.Text = "Deselect All"
-    $deselAllBtn.Location = New-Object System.Drawing.Point(155, ($sy + 10))
-    $deselAllBtn.Size = New-Object System.Drawing.Size(120, 34)
-    $deselAllBtn.FlatStyle = "Flat"
-    $deselAllBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
-    $deselAllBtn.ForeColor = $colTextMain
-    $deselAllBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $deselAllBtn.Add_Click({
-        $script:SuppressSettingsSave = $true
-        foreach ($c in $script:SettingsCheckboxes.Values) { $c.Checked = $false }
-        $script:SuppressSettingsSave = $false
-        $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $script:ConfigFilePath -Encoding UTF8
-    })
-    $settingsPage.Controls.Add($deselAllBtn)
+    # AI Threat Detection — removed from settings (always available, on-demand from AI Threats tab)
 
     $savedLabel = New-Object System.Windows.Forms.Label
     $savedLabel.Text = "Settings are saved automatically"
-    $savedLabel.Location = New-Object System.Drawing.Point(290, ($sy + 16))
+    $savedLabel.Location = New-Object System.Drawing.Point(25, ($sy + 16))
     $savedLabel.Size = New-Object System.Drawing.Size(300, 20)
     $savedLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Italic)
     $savedLabel.ForeColor = $colGreen
