@@ -3096,15 +3096,53 @@ try {
 
     # AI Threat Detection — removed from settings (always available, on-demand from AI Threats tab)
 
-    $savedLabel = New-Object System.Windows.Forms.Label
-    $savedLabel.Text = "Settings are saved automatically"
-    $savedLabel.Location = New-Object System.Drawing.Point(25, ($sy + 16))
-    $savedLabel.Size = New-Object System.Drawing.Size(300, 20)
-    $savedLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Italic)
-    $savedLabel.ForeColor = $colGreen
-    $settingsPage.Controls.Add($savedLabel)
+    # ── Beep on Alert toggle ──
+    $beepCard = New-Object System.Windows.Forms.Panel
+    $beepCard.Location = New-Object System.Drawing.Point(25, $sy)
+    $beepCard.Size = New-Object System.Drawing.Size(770, 48)
+    $beepCard.BackColor = $colCard
+    $beepCard.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $settingsPage.Controls.Add($beepCard)
 
+    $beepIcon = New-Object System.Windows.Forms.Label
+    $beepIcon.Text = "[SND]"
+    $beepIcon.Location = New-Object System.Drawing.Point(10, 5)
+    $beepIcon.Size = New-Object System.Drawing.Size(45, 20)
+    $beepIcon.Font = New-Object System.Drawing.Font("Consolas", 9, [System.Drawing.FontStyle]::Bold)
+    $beepIcon.ForeColor = [System.Drawing.Color]::FromArgb(255, 220, 100)
+    $beepCard.Controls.Add($beepIcon)
+
+    $beepCb = New-Object System.Windows.Forms.CheckBox
+    $beepCb.Text = "Beep on Alert"
+    $beepCb.Location = New-Object System.Drawing.Point(55, 4)
+    $beepCb.Size = New-Object System.Drawing.Size(350, 22)
+    $beepCb.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $beepCb.ForeColor = $colTextMain
+    $beepCb.BackColor = $colCard
+    $beepCb.Tag = "BeepOnAlert"
+    $propBeep = $script:NotifyConfig.PSObject.Properties['BeepOnAlert']
+    $beepCb.Checked = if ($null -eq $propBeep) { $false } else { $propBeep.Value -eq $true }
+    $beepCard.Controls.Add($beepCb)
+
+    $beepDescLbl = New-Object System.Windows.Forms.Label
+    $beepDescLbl.Text = "Play a system beep sound when a new alert is detected."
+    $beepDescLbl.Location = New-Object System.Drawing.Point(55, 27)
+    $beepDescLbl.Size = New-Object System.Drawing.Size(680, 17)
+    $beepDescLbl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+    $beepDescLbl.ForeColor = $colTextDim
+    $beepDescLbl.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $beepCard.Controls.Add($beepDescLbl)
+
+    $beepCb.Add_CheckedChanged({
+        try {
+            if ($script:SuppressSettingsSave) { return }
+            $script:NotifyConfig | Add-Member -MemberType NoteProperty -Name $this.Tag -Value $this.Checked -Force
+            try { $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $script:ConfigFilePath -Encoding UTF8 } catch {}
+        } catch { $script:LastFWError = "SettingsSave(Beep): $($_.Exception.Message)" }
+    })
     $sy += 52
+
+    $sy += 8
 
     # ══════════════════════════════════════════════════════════════════
     #  FIREWALL & NETWORK SETTINGS SECTION
@@ -4288,52 +4326,14 @@ Start-Sleep -Milliseconds 1500
         $script:FWStatusTimer.Start()
     } catch {}
 
-    # ── Beep on Alert toggle ──
-    $sy += 8
-    $beepCard = New-Object System.Windows.Forms.Panel
-    $beepCard.Location = New-Object System.Drawing.Point(25, $sy)
-    $beepCard.Size = New-Object System.Drawing.Size(770, 48)
-    $beepCard.BackColor = $colCard
-    $beepCard.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
-    $settingsPage.Controls.Add($beepCard)
-
-    $beepIcon = New-Object System.Windows.Forms.Label
-    $beepIcon.Text = "[SND]"
-    $beepIcon.Location = New-Object System.Drawing.Point(10, 5)
-    $beepIcon.Size = New-Object System.Drawing.Size(45, 20)
-    $beepIcon.Font = New-Object System.Drawing.Font("Consolas", 9, [System.Drawing.FontStyle]::Bold)
-    $beepIcon.ForeColor = [System.Drawing.Color]::FromArgb(255, 220, 100)
-    $beepCard.Controls.Add($beepIcon)
-
-    $beepCb = New-Object System.Windows.Forms.CheckBox
-    $beepCb.Text = "Beep on Alert"
-    $beepCb.Location = New-Object System.Drawing.Point(55, 4)
-    $beepCb.Size = New-Object System.Drawing.Size(350, 22)
-    $beepCb.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-    $beepCb.ForeColor = $colTextMain
-    $beepCb.BackColor = $colCard
-    $beepCb.Tag = "BeepOnAlert"
-    $propBeep = $script:NotifyConfig.PSObject.Properties['BeepOnAlert']
-    $beepCb.Checked = if ($null -eq $propBeep) { $false } else { $propBeep.Value -eq $true }
-    $beepCard.Controls.Add($beepCb)
-
-    $beepDescLbl = New-Object System.Windows.Forms.Label
-    $beepDescLbl.Text = "Play a system beep sound when a new alert is detected."
-    $beepDescLbl.Location = New-Object System.Drawing.Point(55, 27)
-    $beepDescLbl.Size = New-Object System.Drawing.Size(680, 17)
-    $beepDescLbl.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-    $beepDescLbl.ForeColor = $colTextDim
-    $beepDescLbl.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
-    $beepCard.Controls.Add($beepDescLbl)
-
-    $beepCb.Add_CheckedChanged({
-        try {
-            if ($script:SuppressSettingsSave) { return }
-            $script:NotifyConfig | Add-Member -MemberType NoteProperty -Name $this.Tag -Value $this.Checked -Force
-            try { $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $script:ConfigFilePath -Encoding UTF8 } catch {}
-        } catch { $script:LastFWError = "SettingsSave(Beep): $($_.Exception.Message)" }
-    })
-    $sy += 52
+    $sy += 20
+    $savedLabel = New-Object System.Windows.Forms.Label
+    $savedLabel.Text = "Settings are saved automatically"
+    $savedLabel.Location = New-Object System.Drawing.Point(25, $sy)
+    $savedLabel.Size = New-Object System.Drawing.Size(300, 20)
+    $savedLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Italic)
+    $savedLabel.ForeColor = $colGreen
+    $settingsPage.Controls.Add($savedLabel)
 
   } catch { Write-Console "Settings page error: $_" "ERROR" }
 
