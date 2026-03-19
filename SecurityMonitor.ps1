@@ -1,4 +1,4 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Hardware and System Security Monitoring Tool
@@ -260,10 +260,46 @@ $script:MonitorCache = [hashtable]::Synchronized(@{
 })
 
 # Color-coded output functions
-function Write-Status  { param($Msg) Write-Host "[*] $Msg" -ForegroundColor Cyan }
-function Write-Ok      { param($Msg) Write-Host "[+] $Msg" -ForegroundColor Green }
-function Write-Alert   { param($Msg) Write-Host "[!] ALERT: $Msg" -ForegroundColor Red }
-function Write-Warn    { param($Msg) Write-Host "[~] $Msg" -ForegroundColor Yellow }
+function Write-Status  { param($Msg) Write-Host "[*] $Msg" -ForegroundColor Cyan;    Write-Console $Msg "INFO" }
+function Write-Ok      { param($Msg) Write-Host "[+] $Msg" -ForegroundColor Green;   Write-Console $Msg "OK" }
+function Write-Alert   { param($Msg) Write-Host "[!] ALERT: $Msg" -ForegroundColor Red; Write-Console "ALERT: $Msg" "ERROR" }
+function Write-Warn    { param($Msg) Write-Host "[~] $Msg" -ForegroundColor Yellow;  Write-Console $Msg "WARN" }
+
+# --- Console output helper (writes to GUI Console tab) ---
+function Write-Console {
+    param(
+        [string]$Message,
+        [string]$Level = "INFO"   # INFO, OK, WARN, ERROR, DEBUG
+    )
+    $ts = Get-Date -Format "HH:mm:ss.fff"
+    $prefix = switch ($Level) {
+        "OK"    { "[+]" }
+        "WARN"  { "[~]" }
+        "ERROR" { "[!]" }
+        "DEBUG" { "[D]" }
+        default { "[*]" }
+    }
+    $line = "[$ts] $prefix $Message"
+    try {
+        if ($script:ConsoleBox) {
+            $box = $script:ConsoleBox
+            $color = switch ($Level) {
+                "OK"    { [System.Drawing.Color]::FromArgb(0, 200, 100) }
+                "WARN"  { [System.Drawing.Color]::FromArgb(255, 200, 60) }
+                "ERROR" { [System.Drawing.Color]::FromArgb(255, 80, 80) }
+                "DEBUG" { [System.Drawing.Color]::FromArgb(120, 120, 150) }
+                default { [System.Drawing.Color]::FromArgb(200, 200, 220) }
+            }
+            $box.SelectionStart = $box.TextLength
+            $box.SelectionLength = 0
+            $box.SelectionColor = $color
+            $box.AppendText("$line`r`n")
+            $box.ScrollToCaret()
+        }
+    } catch {}
+    $hostColor = switch ($Level) { "OK" { "Green" } "WARN" { "Yellow" } "ERROR" { "Red" } "DEBUG" { "DarkGray" } default { "Cyan" } }
+    Write-Host $line -ForegroundColor $hostColor
+}
 
 # --- CREATE DIRECTORIES ---
 foreach ($dir in @($LogDir, $BaselineDir)) {
@@ -844,7 +880,7 @@ function Show-Dashboard {
     $pages = $script:Pages
     $contentW = $contentPanel.Width
     $contentH = $contentPanel.Height
-    foreach ($pageName in @("Status", "Alerts", "AI Threats", "Settings", "Logs")) {
+    foreach ($pageName in @("Status", "Alerts", "AI Threats", "Settings", "Logs", "Console")) {
         $p = New-Object System.Windows.Forms.Panel
         $p.Location = New-Object System.Drawing.Point(0, 0)
         $p.Size = New-Object System.Drawing.Size($contentW, $contentH)
@@ -863,7 +899,8 @@ function Show-Dashboard {
         @{ Name = "Alerts";     Icon = "[A]"; Text = "  Alerts" },
         @{ Name = "AI Threats"; Icon = "[AI]"; Text = " AI Threats" },
         @{ Name = "Settings";   Icon = "[C]"; Text = "  Settings" },
-        @{ Name = "Logs";       Icon = "[L]"; Text = "  Logs" }
+        @{ Name = "Logs";       Icon = "[L]"; Text = "  Logs" },
+        @{ Name = "Console";   Icon = "[>]"; Text = "  Console" }
     )
     $navY = 105
     foreach ($nav in $navItems) {
@@ -2599,7 +2636,7 @@ try {
         } catch {}
     }
 
-  } catch { Write-Host "[!] Alerts page error: $_" -ForegroundColor Red }
+  } catch { Write-Console "Alerts page error: $_" "ERROR" }
 
     # ═══════════════════════════════════════════════════════════════
     #  PAGE 2.5: AI THREATS (behavioral + memory analysis)
@@ -2838,7 +2875,7 @@ try {
         } catch {}
     })
 
-  } catch { Write-Host "[!] AI Threats page error: $_" -ForegroundColor Red }
+  } catch { Write-Console "AI Threats page error: $_" "ERROR" }
 
     # ═══════════════════════════════════════════════════════════════
     #  PAGE 3: SETTINGS (notification preferences - live edit)
@@ -3253,13 +3290,16 @@ try {
         'FW_BlockPing'      = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_BlockICMP" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
         'FW_BlockLAN'       = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_BlockLAN_In_192" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
         'FW_BlockDevices'   = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_BlockDev_SMB_In" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
-        'PF_BlockTrackers'  = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) { $h -match "SecurityMonitor-Trackers-Start" } else { $h -notmatch "SecurityMonitor-Trackers-Start" }'
-        'PF_BlockMalware'   = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) { $h -match "SecurityMonitor-Malware-Start" } else { $h -notmatch "SecurityMonitor-Malware-Start" }'
-        'PF_BlockTelemetry' = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) { $h -match "SecurityMonitor-Telemetry-Start" } else { $h -notmatch "SecurityMonitor-Telemetry-Start" }'
+        'PF_BlockTrackers'  = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) {{ $h -match "SecurityMonitor-Trackers-Start" }} else {{ $h -notmatch "SecurityMonitor-Trackers-Start" }}'
+        'PF_BlockMalware'   = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) {{ $h -match "SecurityMonitor-Malware-Start" }} else {{ $h -notmatch "SecurityMonitor-Malware-Start" }}'
+        'PF_BlockTelemetry' = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) {{ $h -match "SecurityMonitor-Telemetry-Start" }} else {{ $h -notmatch "SecurityMonitor-Telemetry-Start" }}'
         'PF_BlockDNSBypass' = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_DNSLock_Out" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
-        'DNS_DoH'           = '$rv = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters" -Name "EnableAutoDoh" -EA SilentlyContinue; $globalOk = if ({0}) { $null -ne $rv -and $rv.EnableAutoDoh -eq 2 } else { $null -eq $rv -or $rv.EnableAutoDoh -ne 2 }; if (-not $globalOk) { $false; return }; if ({0}) { $adapters = Get-NetAdapter | Where-Object { $_.Status -eq "Up" -and $_.Virtual -eq $false }; $hasPerAdapter = $false; foreach ($a in $adapters) { $dohPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($a.InterfaceGuid)\DohInterfaceSettings\Doh"; if (Test-Path $dohPath) { $children = Get-ChildItem $dohPath -EA SilentlyContinue; if ($children.Count -gt 0) { $hasPerAdapter = $true; break } } }; $hasPerAdapter } else { $true }'
-        'DNS_Provider'      = '$expectedPrimary = {0}; $adapters = Get-NetAdapter | Where-Object {{ $_.Status -eq "Up" -and $_.Virtual -eq $false }}; if ($null -eq $expectedPrimary -or $expectedPrimary -eq "None") {{ $allDhcp = $true; foreach ($a in $adapters) {{ $dns = (Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -EA SilentlyContinue).ServerAddresses; if ($dns.Count -gt 0) {{ $knownProviders = @("1.1.1.1","1.0.0.1","9.9.9.9","149.112.112.112","8.8.8.8","8.8.4.4","208.67.222.222","208.67.220.220","94.140.14.14","94.140.15.15"); $isKnown = $false; foreach ($d in $dns) {{ if ($knownProviders -contains $d) {{ $isKnown = $true; break }} }}; if ($isKnown) {{ $allDhcp = $false; break }} }} }}; $allDhcp }} else {{ $found = $false; foreach ($a in $adapters) {{ $dns = (Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -EA SilentlyContinue).ServerAddresses; if ($dns -contains $expectedPrimary) {{ $found = $true; break }} }}; $found }}'
+        'DNS_DoH'           = 'if ({0}) {{ $adapters = Get-NetAdapter | Where-Object {{ $_.Status -eq "Up" -and $_.Virtual -eq $false }}; $ok = $false; foreach ($a in $adapters) {{ $dohPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($a.InterfaceGuid)\DohInterfaceSettings\Doh"; if (Test-Path $dohPath) {{ $children = Get-ChildItem $dohPath -EA SilentlyContinue; if ($children.Count -gt 0) {{ $ok = $true; break }} }} }}; $ok }} else {{ $adapters = Get-NetAdapter | Where-Object {{ $_.Status -eq "Up" -and $_.Virtual -eq $false }}; $clean = $true; foreach ($a in $adapters) {{ $dohPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($a.InterfaceGuid)\DohInterfaceSettings\Doh"; if (Test-Path $dohPath) {{ $children = Get-ChildItem $dohPath -EA SilentlyContinue; if ($children.Count -gt 0) {{ $clean = $false; break }} }} }}; $clean }}'
+        'DNS_Provider'      = ''
     }
+
+    # Callback data storage — eliminates need for .GetNewClosure() which breaks .NET type resolution in PS 5.1
+    $script:FWCallbackData = @{}
 
     $script:InvokeElevatedFWAsync = {
         param([string]$ScriptContent, [string]$ActionName, [scriptblock]$OnComplete, [string]$VerifyScript = '')
@@ -3269,8 +3309,6 @@ try {
         $resultFile = [System.IO.Path]::GetTempFileName()
         $escapedResultFile = $resultFile -replace "'", "''"
         if ($VerifyScript -ne '') {
-            # Verify branch: run action, then double-verify actual system state
-            # Uses & { } scriptblock wrapper so multi-statement verify expressions return correct boolean
             $wrappedScript = @"
 try {
     $ScriptContent
@@ -3288,7 +3326,6 @@ try {
 }
 "@
         } else {
-            # No-verify branch: just run action
             $wrappedScript = @"
 try {
     $ScriptContent
@@ -3301,46 +3338,45 @@ try {
         [System.IO.File]::WriteAllText($scriptFile, $wrappedScript)
         try {
             if ($script:IsElevated) {
-                # Already admin — run directly without UAC prompt
                 $proc = Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $scriptFile -PassThru -ErrorAction Stop
             } else {
-                # Not admin — elevate via UAC
                 $proc = Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $scriptFile -Verb RunAs -PassThru -ErrorAction Stop
             }
         } catch {
-            # UAC cancelled or failed
             if (Test-Path $scriptFile) { Remove-Item $scriptFile -Force -ErrorAction SilentlyContinue }
             if (Test-Path $resultFile) { Remove-Item $resultFile -Force -ErrorAction SilentlyContinue }
-            & $OnComplete "ERROR: UAC cancelled or elevation failed: $($_.Exception.Message)"
+            Write-Console "[$ActionName] UAC cancelled or elevation failed: $($_.Exception.Message)" "ERROR"
+            & $OnComplete $ActionName "ERROR: UAC cancelled or elevation failed: $($_.Exception.Message)"
             return
         }
-        # Poll timer - check every 500ms if elevated script finished
+        Write-Console "[$ActionName] Elevated script started (PID: $($proc.Id))" "DEBUG"
+        # Poll timer — uses $this.Tag instead of .GetNewClosure() to avoid PS 5.1 module scope issues
         $pollTimer = New-Object System.Windows.Forms.Timer
         $pollTimer.Interval = 500
-        $capturedProc = $proc
-        $capturedResultFile = $resultFile
-        $capturedScriptFile = $scriptFile
-        $capturedOnComplete = $OnComplete
+        $pollTimer.Tag = @{ Proc = $proc; ResultFile = $resultFile; ScriptFile = $scriptFile; OnComplete = $OnComplete; ActionName = $ActionName }
         $pollTimer.Add_Tick({
+            $d = $this.Tag
             try {
-                if ($capturedProc.HasExited) {
+                if ($d.Proc.HasExited) {
                     $this.Stop()
                     $this.Dispose()
                     $result = "ERROR: No result file"
-                    if (Test-Path $capturedResultFile) {
-                        $rawContent = Get-Content $capturedResultFile -Raw -ErrorAction SilentlyContinue
-                        if ($rawContent) { $result = $rawContent.Trim() }
-                        Remove-Item $capturedResultFile -Force -ErrorAction SilentlyContinue
+                    if (Test-Path $d.ResultFile) {
+                        $rawContent = Get-Content $d.ResultFile -Raw -ErrorAction SilentlyContinue
+                        if ($rawContent) { $result = $rawContent.Trim() -replace '^\uFEFF', '' }
+                        Remove-Item $d.ResultFile -Force -ErrorAction SilentlyContinue
                     }
-                    if (Test-Path $capturedScriptFile) { Remove-Item $capturedScriptFile -Force -ErrorAction SilentlyContinue }
-                    & $capturedOnComplete $result
+                    if (Test-Path $d.ScriptFile) { Remove-Item $d.ScriptFile -Force -ErrorAction SilentlyContinue }
+                    Write-Console "[$($d.ActionName)] Result: $result" $(if ($result -match '^VERIFIED') { "OK" } elseif ($result -match '^SUCCESS') { "WARN" } else { "ERROR" })
+                    & $d.OnComplete $d.ActionName $result
                 }
             } catch {
                 $this.Stop()
                 $this.Dispose()
-                try { & $capturedOnComplete "ERROR: Poll timer exception: $($_.Exception.Message)" } catch {}
+                Write-Console "[$($d.ActionName)] Poll exception: $($_.Exception.Message)" "ERROR"
+                try { & $d.OnComplete $d.ActionName "ERROR: Poll exception: $($_.Exception.Message)" } catch {}
             }
-        }.GetNewClosure())
+        })
         $pollTimer.Start()
     }
 
@@ -3484,37 +3520,21 @@ try {
                 # Build the elevated script content based on config key
                 $elevatedScript = $null
                 switch ($cfgKey) {
-                    'FW_DomainProfile'  { $elevatedScript = if ($isChecked) { "Set-NetFirewallProfile -Name Domain -Enabled True" } else { "Set-NetFirewallProfile -Name Domain -Enabled False" } }
-                    'FW_PrivateProfile' { $elevatedScript = if ($isChecked) { "Set-NetFirewallProfile -Name Private -Enabled True" } else { "Set-NetFirewallProfile -Name Private -Enabled False" } }
-                    'FW_PublicProfile'  { $elevatedScript = if ($isChecked) { "Set-NetFirewallProfile -Name Public -Enabled True" } else { "Set-NetFirewallProfile -Name Public -Enabled False" } }
+                    'FW_DomainProfile'  { $elevatedScript = if ($isChecked) { "Set-NetFirewallProfile -Name Domain -Enabled True -DefaultInboundAction Block -DefaultOutboundAction Allow" } else { "Set-NetFirewallProfile -Name Domain -Enabled False" } }
+                    'FW_PrivateProfile' { $elevatedScript = if ($isChecked) { "Set-NetFirewallProfile -Name Private -Enabled True -DefaultInboundAction Block -DefaultOutboundAction Allow" } else { "Set-NetFirewallProfile -Name Private -Enabled False" } }
+                    'FW_PublicProfile'  { $elevatedScript = if ($isChecked) { "Set-NetFirewallProfile -Name Public -Enabled True -DefaultInboundAction Block -DefaultOutboundAction Allow" } else { "Set-NetFirewallProfile -Name Public -Enabled False" } }
                     'FW_BlockInbound' {
                         if ($isChecked) {
                             $elevatedScript = @'
-# Layer 1: Windows Firewall profile default
 Set-NetFirewallProfile -All -DefaultInboundAction Block -ErrorAction SilentlyContinue
-# Layer 2: Explicit named block rule (survives third-party FW profile override)
 Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllInbound' -ErrorAction SilentlyContinue
 New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllInbound' -Direction Inbound -Action Block -Protocol Any -Profile Any -ErrorAction Stop | Out-Null
-# Layer 3: IPSec policy (bypasses ALL third-party firewalls/antivirus - kernel TCP/IP stack)
-Start-Service -Name PolicyAgent -ErrorAction SilentlyContinue
-Set-Service -Name PolicyAgent -StartupType Automatic -ErrorAction SilentlyContinue
-& netsh ipsec static add policy name="SecurityMonitor" assign=yes 2>&1 | Out-Null
-& netsh ipsec static add filteraction name="SM_Block" action=block 2>&1 | Out-Null
-& netsh ipsec static delete rule name="SM_InBlock_Rule" policy="SecurityMonitor" 2>&1 | Out-Null
-& netsh ipsec static delete filterlist name="SM_InBlock" 2>&1 | Out-Null
-& netsh ipsec static add filterlist name="SM_InBlock" 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_InBlock" srcaddr=any dstaddr=me protocol=TCP mirrored=no 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_InBlock" srcaddr=any dstaddr=me protocol=UDP mirrored=no 2>&1 | Out-Null
-& netsh ipsec static add rule name="SM_InBlock_Rule" policy="SecurityMonitor" filterlist="SM_InBlock" filteraction="SM_Block" 2>&1 | Out-Null
-# Layer 4: WFP user-mode filters (OUTBOUND_TRANSPORT layer - not hooked by third-party AV)
 & "$PSScriptRoot\SmWfpEngine.ps1" -Action BlockInbound 2>&1 | Out-Null
 '@
                         } else {
                             $elevatedScript = @'
 Set-NetFirewallProfile -All -DefaultInboundAction Allow -ErrorAction SilentlyContinue
 Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllInbound' -ErrorAction SilentlyContinue
-& netsh ipsec static delete rule name="SM_InBlock_Rule" policy="SecurityMonitor" 2>&1 | Out-Null
-& netsh ipsec static delete filterlist name="SM_InBlock" 2>&1 | Out-Null
 & "$PSScriptRoot\SmWfpEngine.ps1" -Action UnblockInbound 2>&1 | Out-Null
 '@
                         }
@@ -3522,31 +3542,15 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllInbound' -ErrorActi
                     'FW_BlockOutbound' {
                         if ($isChecked) {
                             $elevatedScript = @'
-# Layer 1: Windows Firewall profile default
 Set-NetFirewallProfile -All -DefaultOutboundAction Block -ErrorAction SilentlyContinue
-# Layer 2: Explicit named block rule
 Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllOutbound' -ErrorAction SilentlyContinue
 New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllOutbound' -Direction Outbound -Action Block -Protocol Any -Profile Any -ErrorAction Stop | Out-Null
-# Layer 3: IPSec policy (bypasses ALL third-party firewalls/antivirus - kernel TCP/IP stack)
-Start-Service -Name PolicyAgent -ErrorAction SilentlyContinue
-Set-Service -Name PolicyAgent -StartupType Automatic -ErrorAction SilentlyContinue
-& netsh ipsec static add policy name="SecurityMonitor" assign=yes 2>&1 | Out-Null
-& netsh ipsec static add filteraction name="SM_Block" action=block 2>&1 | Out-Null
-& netsh ipsec static delete rule name="SM_OutBlock_Rule" policy="SecurityMonitor" 2>&1 | Out-Null
-& netsh ipsec static delete filterlist name="SM_OutBlock" 2>&1 | Out-Null
-& netsh ipsec static add filterlist name="SM_OutBlock" 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_OutBlock" srcaddr=me dstaddr=any protocol=TCP mirrored=no 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_OutBlock" srcaddr=me dstaddr=any protocol=UDP mirrored=no 2>&1 | Out-Null
-& netsh ipsec static add rule name="SM_OutBlock_Rule" policy="SecurityMonitor" filterlist="SM_OutBlock" filteraction="SM_Block" 2>&1 | Out-Null
-# Layer 4: WFP user-mode filters (OUTBOUND_TRANSPORT layer - not hooked by third-party AV)
 & "$PSScriptRoot\SmWfpEngine.ps1" -Action BlockOutbound 2>&1 | Out-Null
 '@
                         } else {
                             $elevatedScript = @'
 Set-NetFirewallProfile -All -DefaultOutboundAction Allow -ErrorAction SilentlyContinue
 Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllOutbound' -ErrorAction SilentlyContinue
-& netsh ipsec static delete rule name="SM_OutBlock_Rule" policy="SecurityMonitor" 2>&1 | Out-Null
-& netsh ipsec static delete filterlist name="SM_OutBlock" 2>&1 | Out-Null
 & "$PSScriptRoot\SmWfpEngine.ps1" -Action UnblockOutbound 2>&1 | Out-Null
 '@
                         }
@@ -3554,32 +3558,18 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllOutbound' -ErrorAct
                     'FW_BlockPing' {
                         if ($isChecked) {
                             $elevatedScript = @'
-# Layer 1: Windows Firewall rule
 Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockICMP' -ErrorAction SilentlyContinue
 New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockICMP' -Direction Inbound -Protocol ICMPv4 -IcmpType 8 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
-# Layer 2: IPSec policy (works independently of any third-party firewall)
-Start-Service -Name PolicyAgent -ErrorAction SilentlyContinue
-Set-Service -Name PolicyAgent -StartupType Automatic -ErrorAction SilentlyContinue
-& netsh ipsec static add policy name="SecurityMonitor" assign=yes 2>&1 | Out-Null
-& netsh ipsec static add filteraction name="SM_Block" action=block 2>&1 | Out-Null
-& netsh ipsec static delete rule name="SM_ICMP_Rule" policy="SecurityMonitor" 2>&1 | Out-Null
-& netsh ipsec static delete filterlist name="SM_ICMP" 2>&1 | Out-Null
-& netsh ipsec static add filterlist name="SM_ICMP" 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_ICMP" srcaddr=any dstaddr=me protocol=ICMP mirrored=no 2>&1 | Out-Null
-& netsh ipsec static add rule name="SM_ICMP_Rule" policy="SecurityMonitor" filterlist="SM_ICMP" filteraction="SM_Block" 2>&1 | Out-Null
 '@
                         } else {
                             $elevatedScript = @'
 Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockICMP' -ErrorAction SilentlyContinue
-& netsh ipsec static delete rule name="SM_ICMP_Rule" policy="SecurityMonitor" 2>&1 | Out-Null
-& netsh ipsec static delete filterlist name="SM_ICMP" 2>&1 | Out-Null
 '@
                         }
                     }
                     'FW_BlockLAN' {
                         if ($isChecked) {
                             $elevatedScript = @'
-# Layer 1: Windows Firewall rules
 Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
 New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_In_192' -Direction Inbound -Action Block -RemoteAddress '192.168.0.0/16' -Profile Any -ErrorAction SilentlyContinue | Out-Null
 New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_Out_192' -Direction Outbound -Action Block -RemoteAddress '192.168.0.0/16' -Profile Any -ErrorAction SilentlyContinue | Out-Null
@@ -3587,24 +3577,10 @@ New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_In_10' -Direction Inb
 New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_Out_10' -Direction Outbound -Action Block -RemoteAddress '10.0.0.0/8' -Profile Any -ErrorAction SilentlyContinue | Out-Null
 New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_In_172' -Direction Inbound -Action Block -RemoteAddress '172.16.0.0/12' -Profile Any -ErrorAction SilentlyContinue | Out-Null
 New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_Out_172' -Direction Outbound -Action Block -RemoteAddress '172.16.0.0/12' -Profile Any -ErrorAction SilentlyContinue | Out-Null
-# Layer 2: IPSec policy for LAN isolation (firewall-independent)
-Start-Service -Name PolicyAgent -ErrorAction SilentlyContinue
-Set-Service -Name PolicyAgent -StartupType Automatic -ErrorAction SilentlyContinue
-& netsh ipsec static add policy name="SecurityMonitor" assign=yes 2>&1 | Out-Null
-& netsh ipsec static add filteraction name="SM_Block" action=block 2>&1 | Out-Null
-& netsh ipsec static delete rule name="SM_LAN_Rule" policy="SecurityMonitor" 2>&1 | Out-Null
-& netsh ipsec static delete filterlist name="SM_LAN" 2>&1 | Out-Null
-& netsh ipsec static add filterlist name="SM_LAN" 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_LAN" srcaddr=192.168.0.0 srcmask=255.255.0.0 dstaddr=me protocol=any mirrored=yes 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_LAN" srcaddr=10.0.0.0 srcmask=255.0.0.0 dstaddr=me protocol=any mirrored=yes 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_LAN" srcaddr=172.16.0.0 srcmask=255.240.0.0 dstaddr=me protocol=any mirrored=yes 2>&1 | Out-Null
-& netsh ipsec static add rule name="SM_LAN_Rule" policy="SecurityMonitor" filterlist="SM_LAN" filteraction="SM_Block" 2>&1 | Out-Null
 '@
                         } else {
                             $elevatedScript = @'
 Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
-& netsh ipsec static delete rule name="SM_LAN_Rule" policy="SecurityMonitor" 2>&1 | Out-Null
-& netsh ipsec static delete filterlist name="SM_LAN" 2>&1 | Out-Null
 '@
                         }
                     }
@@ -3637,29 +3613,10 @@ Set-Service SSDPSRV -StartupType Disabled -ErrorAction SilentlyContinue
 Stop-Service upnphost -Force -ErrorAction SilentlyContinue
 Set-Service upnphost -StartupType Disabled -ErrorAction SilentlyContinue
 Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force -ErrorAction SilentlyContinue
-# Layer 3: IPSec for port-level blocking (firewall-independent)
-Start-Service -Name PolicyAgent -ErrorAction SilentlyContinue
-Set-Service -Name PolicyAgent -StartupType Automatic -ErrorAction SilentlyContinue
-& netsh ipsec static add policy name="SecurityMonitor" assign=yes 2>&1 | Out-Null
-& netsh ipsec static add filteraction name="SM_Block" action=block 2>&1 | Out-Null
-& netsh ipsec static delete rule name="SM_Dev_Rule" policy="SecurityMonitor" 2>&1 | Out-Null
-& netsh ipsec static delete filterlist name="SM_Devices" 2>&1 | Out-Null
-& netsh ipsec static add filterlist name="SM_Devices" 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_Devices" srcaddr=any dstaddr=me protocol=TCP dstport=445 mirrored=yes 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_Devices" srcaddr=any dstaddr=me protocol=TCP dstport=139 mirrored=yes 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_Devices" srcaddr=any dstaddr=me protocol=UDP dstport=137 mirrored=yes 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_Devices" srcaddr=any dstaddr=me protocol=UDP dstport=138 mirrored=yes 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_Devices" srcaddr=any dstaddr=me protocol=UDP dstport=5355 mirrored=yes 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_Devices" srcaddr=any dstaddr=me protocol=UDP dstport=5353 mirrored=yes 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_Devices" srcaddr=any dstaddr=me protocol=UDP dstport=1900 mirrored=yes 2>&1 | Out-Null
-& netsh ipsec static add filter filterlist="SM_Devices" srcaddr=any dstaddr=me protocol=TCP dstport=2869 mirrored=yes 2>&1 | Out-Null
-& netsh ipsec static add rule name="SM_Dev_Rule" policy="SecurityMonitor" filterlist="SM_Devices" filteraction="SM_Block" 2>&1 | Out-Null
 '@
                         } else {
                             $elevatedScript = @'
-# Layer 1: Remove firewall rules
 Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
-# Layer 2: Re-enable services/protocols
 Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces' -ErrorAction SilentlyContinue | ForEach-Object {
     Set-ItemProperty -Path $_.PSPath -Name 'NetbiosOptions' -Value 0 -Type DWord -ErrorAction SilentlyContinue
 }
@@ -3667,9 +3624,6 @@ Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' 
 Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableMDNS' -Value 1 -Type DWord -ErrorAction SilentlyContinue
 Set-Service SSDPSRV -StartupType Manual -ErrorAction SilentlyContinue
 Set-Service upnphost -StartupType Manual -ErrorAction SilentlyContinue
-# Layer 3: Remove IPSec device block
-& netsh ipsec static delete rule name="SM_Dev_Rule" policy="SecurityMonitor" 2>&1 | Out-Null
-& netsh ipsec static delete filterlist name="SM_Devices" 2>&1 | Out-Null
 '@
                         }
                     }
@@ -3785,19 +3739,18 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_TCP' -ErrorAction S
                 }
 
                 if ($null -ne $elevatedScript) {
-                    # Capture ALL variables for async callback closure
-                    $capturedKey = $cfgKey
-                    $capturedChecked = $isChecked
-                    $capturedCb = $this
-                    $capturedDot = $dot
-                    $capturedRetryCount = $script:FWRetryCount
-                    $capturedPendingOps = $script:FWPendingOps
-                    $capturedNotifyConfig = $script:NotifyConfig
-                    $capturedConfigPath = $script:ConfigFilePath
-                    $capturedSaveConfig = ${function:Save-Config}
-                    $capturedCheckboxes = $script:FWCheckboxes
-                    $capturedStatusDots = $script:FWStatusDots
-                    $capturedErrorLabel = $script:FWErrorLabel
+                    Write-Console "[$cfgKey] Toggling to $isChecked..." "INFO"
+                    # Store callback data in script-scope (avoids .GetNewClosure() PS 5.1 issues)
+                    $script:FWCallbackData[$cfgKey] = @{
+                        Key = $cfgKey; Checked = $isChecked; Cb = $this; Dot = $dot
+                        RetryCount = $script:FWRetryCount; PendingOps = $script:FWPendingOps
+                        NotifyConfig = $script:NotifyConfig; SaveConfig = ${function:Save-Config}
+                        ErrorLabel = $script:FWErrorLabel
+                        ColorGreen = [System.Drawing.Color]::FromArgb(0, 200, 100)
+                        ColorRed = [System.Drawing.Color]::FromArgb(220, 50, 60)
+                        ColorOrange = [System.Drawing.Color]::FromArgb(255, 160, 40)
+                        ColorError = [System.Drawing.Color]::FromArgb(255, 60, 60)
+                    }
 
                     # Build verify expression for this key
                     $verifyExpr = ''
@@ -3806,44 +3759,43 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_TCP' -ErrorAction S
                     }
 
                     & $script:InvokeElevatedFWAsync -ScriptContent $elevatedScript -ActionName $cfgKey -VerifyScript $verifyExpr -OnComplete {
-                        param($result)
+                        param($actionName, $result)
+                        $d = $script:FWCallbackData[$actionName]
+                        if (-not $d) { return }
                         try {
                             if ($result -match '^VERIFIED') {
-                                # Action succeeded + double-verification passed — green
-                                $capturedRetryCount[$capturedKey] = 0
-                                try { $capturedCb.Checked = $capturedChecked } catch {}
-                                $capturedNotifyConfig | Add-Member -MemberType NoteProperty -Name $capturedKey -Value $capturedChecked -Force
-                                & $capturedSaveConfig
-                                if ($capturedDot) {
-                                    $capturedDot.BackColor = if ($capturedChecked) {
-                                        [System.Drawing.Color]::FromArgb(0, 200, 100)
-                                    } else {
-                                        [System.Drawing.Color]::FromArgb(220, 50, 60)
-                                    }
+                                $d.RetryCount[$actionName] = 0
+                                try { $d.Cb.Checked = $d.Checked } catch {}
+                                $d.NotifyConfig | Add-Member -MemberType NoteProperty -Name $actionName -Value $d.Checked -Force
+                                try { & $d.SaveConfig } catch {}
+                                if ($d.Dot) {
+                                    if ($d.Checked) { $d.Dot.BackColor = $d.ColorGreen } else { $d.Dot.BackColor = $d.ColorRed }
                                 }
-                                if ($capturedErrorLabel) { $capturedErrorLabel.Text = "" }
-                                $capturedPendingOps[$capturedKey] = $false
+                                if ($d.ErrorLabel) { $d.ErrorLabel.Text = "" }
+                                Write-Console "[$actionName] Verified and applied (checked=$($d.Checked))" "OK"
+                                $d.PendingOps[$actionName] = $false
                             } elseif ($result -match '^SUCCESS') {
-                                # Action succeeded but verification failed — orange warning
-                                try { $capturedCb.Checked = $capturedChecked } catch {}
-                                $capturedNotifyConfig | Add-Member -MemberType NoteProperty -Name $capturedKey -Value $capturedChecked -Force
-                                & $capturedSaveConfig
-                                if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 160, 40) }
-                                if ($capturedErrorLabel) { $capturedErrorLabel.Text = "$capturedKey applied but verification failed — setting may have been blocked" }
-                                $capturedPendingOps[$capturedKey] = $false
+                                try { $d.Cb.Checked = $d.Checked } catch {}
+                                $d.NotifyConfig | Add-Member -MemberType NoteProperty -Name $actionName -Value $d.Checked -Force
+                                try { & $d.SaveConfig } catch {}
+                                if ($d.Dot) { $d.Dot.BackColor = $d.ColorOrange }
+                                if ($d.ErrorLabel) { $d.ErrorLabel.Text = "$actionName applied but verification failed" }
+                                Write-Console "[$actionName] Applied but verification failed" "WARN"
+                                $d.PendingOps[$actionName] = $false
                             } else {
-                                # ERROR
-                                $capturedRetryCount[$capturedKey] = ($capturedRetryCount[$capturedKey] + 1)
-                                if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
-                                if ($capturedErrorLabel) { $capturedErrorLabel.Text = "Failed: $capturedKey - $result" }
-                                $capturedPendingOps[$capturedKey] = $false
+                                $d.RetryCount[$actionName] = ($d.RetryCount[$actionName] + 1)
+                                if ($d.Dot) { $d.Dot.BackColor = $d.ColorError }
+                                if ($d.ErrorLabel) { $d.ErrorLabel.Text = "Failed: $actionName - $result" }
+                                Write-Console "[$actionName] Failed: $result" "ERROR"
+                                $d.PendingOps[$actionName] = $false
                             }
                         } catch {
-                            if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
-                            if ($capturedErrorLabel) { $capturedErrorLabel.Text = "Error: $capturedKey - $($_.Exception.Message)" }
-                            $capturedPendingOps[$capturedKey] = $false
+                            if ($d.Dot) { $d.Dot.BackColor = $d.ColorError }
+                            if ($d.ErrorLabel) { $d.ErrorLabel.Text = "Error: $actionName - $($_.Exception.Message)" }
+                            Write-Console "[$actionName] Callback error: $($_.Exception.Message)" "ERROR"
+                            $d.PendingOps[$actionName] = $false
                         }
-                    }.GetNewClosure()
+                    }
                 } else {
                     $script:FWPendingOps[$cfgKey] = $false
                     if ($dot) { $dot.BackColor = [System.Drawing.Color]::FromArgb(80, 80, 100) }
@@ -3852,6 +3804,7 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_TCP' -ErrorAction S
                 $script:FWPendingOps[$this.Tag] = $false
                 $script:LastFWError = "$($this.Tag): $($_.Exception.Message)"
                 if ($script:FWErrorLabel) { $script:FWErrorLabel.Text = $script:LastFWError }
+                Write-Console "[$($this.Tag)] Handler error: $($_.Exception.Message)" "ERROR"
             }
         })
 
@@ -3938,6 +3891,7 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_TCP' -ErrorAction S
             $script:DnsProviderCombo.SelectedIndex = 0
         }
     } finally { $script:SuppressSettingsSave = $false }
+    $script:DnsProviderCombo.Tag = $script:DnsProviderCombo.SelectedItem
     $dnsProviderCard.Controls.Add($script:DnsProviderCombo)
 
     # DNS Provider status dot
@@ -3955,13 +3909,17 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_TCP' -ErrorAction S
             # Pending operation guard - prevent concurrent DNS changes
             if ($script:FWPendingOps.ContainsKey('DNS_Provider') -and $script:FWPendingOps['DNS_Provider']) { return }
             $script:FWPendingOps['DNS_Provider'] = $true
+            Write-Console "[DNS_Provider] Changing to: $($script:DnsProviderCombo.SelectedItem)" "INFO"
 
+            $previousSelectedItem = $script:DnsProviderCombo.Tag
             $selectedItem = $script:DnsProviderCombo.SelectedItem.ToString()
             $provInfo = $script:DnsProviderReverseMap[$selectedItem]
             if (-not $provInfo) { $script:FWPendingOps['DNS_Provider'] = $false; return }
             $provName = $provInfo.Name
             $dot = $script:FWStatusDots['DNS_Provider']
             if ($dot) { $dot.BackColor = [System.Drawing.Color]::FromArgb(255, 200, 60) }
+            # Pessimistic: revert combo immediately, restore only on verified success
+            try { $script:SuppressSettingsSave = $true; $script:DnsProviderCombo.SelectedItem = $previousSelectedItem } finally { $script:SuppressSettingsSave = $false }
 
             if ($provName -eq 'None') {
                 # Reset DNS to DHCP (both IPv4 and IPv6)
@@ -3994,68 +3952,83 @@ if (-not `$success) { throw "No adapter could be configured" }
 "@
             }
 
-            $capturedProvName = $provName
-            $capturedDot = $dot
-            $capturedNotifyConfig = $script:NotifyConfig
-            $capturedSaveConfig = ${function:Save-Config}
-            $capturedErrorLabel = $script:FWErrorLabel
-            $capturedPendingOps = $script:FWPendingOps
-            $capturedDohCb = $script:FWCheckboxes['DNS_DoH']
+            $script:FWCallbackData['DNS_Provider'] = @{
+                ProvName = $provName; Dot = $dot; NotifyConfig = $script:NotifyConfig
+                SaveConfig = ${function:Save-Config}; ErrorLabel = $script:FWErrorLabel
+                PendingOps = $script:FWPendingOps; DohCb = $script:FWCheckboxes['DNS_DoH']
+                DnsCombo = $script:DnsProviderCombo; ConfigMap = $script:DnsProviderConfigMap
+                ColorGreen = [System.Drawing.Color]::FromArgb(0, 200, 100)
+                ColorGrey = [System.Drawing.Color]::FromArgb(80, 80, 100)
+                ColorOrange = [System.Drawing.Color]::FromArgb(255, 160, 40)
+                ColorError = [System.Drawing.Color]::FromArgb(255, 60, 60)
+            }
 
-            # Build verify expression for DNS_Provider
-            $expectedPrimary = if ($provName -eq 'None') { "'None'" } else { "'$($provInfo.Primary)'" }
-            $verifyExpr = $script:VerifyScripts['DNS_Provider'] -f $expectedPrimary
+            # Build verify expression for DNS_Provider (built directly to avoid -f format escaping issues)
+            if ($provName -eq 'None') {
+                $verifyExpr = @'
+$a = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false } | Select-Object -First 1
+if (-not $a) { $true; return }
+$dns = (Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -EA SilentlyContinue).ServerAddresses
+$known = @('1.1.1.1','9.9.9.9','8.8.8.8','208.67.222.222','94.140.14.14')
+$hasKnown = $false
+foreach ($k in $known) { if ($dns -contains $k) { $hasKnown = $true; break } }
+-not $hasKnown
+'@
+            } else {
+                $verifyPrimary = $provInfo.Primary
+                $verifyExpr = @"
+`$a = Get-NetAdapter | Where-Object { `$_.Status -eq 'Up' -and `$_.Virtual -eq `$false } | Select-Object -First 1
+if (-not `$a) { `$false; return }
+`$dns = (Get-DnsClientServerAddress -InterfaceIndex `$a.ifIndex -AddressFamily IPv4 -EA SilentlyContinue).ServerAddresses
+`$dns -contains '$verifyPrimary'
+"@
+            }
 
             & $script:InvokeElevatedFWAsync -ScriptContent $elevatedScript -ActionName "DNS_Provider" -VerifyScript $verifyExpr -OnComplete {
-                param($result)
+                param($actionName, $result)
+                $d = $script:FWCallbackData[$actionName]
+                if (-not $d) { return }
                 try {
                     if ($result -match '^VERIFIED') {
-                        $capturedNotifyConfig | Add-Member -MemberType NoteProperty -Name 'DNS_Provider' -Value $capturedProvName -Force
-                        & $capturedSaveConfig
-                        if ($capturedDot) {
-                            $capturedDot.BackColor = if ($capturedProvName -ne 'None') {
-                                [System.Drawing.Color]::FromArgb(0, 200, 100)
-                            } else {
-                                [System.Drawing.Color]::FromArgb(80, 80, 100)
-                            }
+                        try { $d.DnsCombo.SelectedItem = $d.ConfigMap[$d.ProvName] } catch {}
+                        $d.DnsCombo.Tag = $d.DnsCombo.SelectedItem
+                        $d.NotifyConfig | Add-Member -MemberType NoteProperty -Name 'DNS_Provider' -Value $d.ProvName -Force
+                        try { & $d.SaveConfig } catch {}
+                        if ($d.Dot) {
+                            if ($d.ProvName -ne 'None') { $d.Dot.BackColor = $d.ColorGreen } else { $d.Dot.BackColor = $d.ColorGrey }
                         }
-                        if ($capturedErrorLabel) { $capturedErrorLabel.Text = "" }
-                        # Disable DoH checkbox when provider is None
-                        if ($capturedDohCb) {
-                            if ($capturedProvName -eq 'None') {
-                                $capturedDohCb.Checked = $false
-                                $capturedDohCb.Enabled = $false
-                            } else {
-                                $capturedDohCb.Enabled = $true
-                            }
+                        if ($d.ErrorLabel) { $d.ErrorLabel.Text = "" }
+                        if ($d.DohCb) {
+                            if ($d.ProvName -eq 'None') { $d.DohCb.Checked = $false; $d.DohCb.Enabled = $false } else { $d.DohCb.Enabled = $true }
                         }
+                        Write-Console "[DNS_Provider] Verified: $($d.ProvName)" "OK"
                     } elseif ($result -match '^SUCCESS') {
-                        $capturedNotifyConfig | Add-Member -MemberType NoteProperty -Name 'DNS_Provider' -Value $capturedProvName -Force
-                        & $capturedSaveConfig
-                        if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 160, 40) }
-                        if ($capturedErrorLabel) { $capturedErrorLabel.Text = "DNS applied but verification pending" }
-                        # Disable DoH checkbox when provider is None
-                        if ($capturedDohCb) {
-                            if ($capturedProvName -eq 'None') {
-                                $capturedDohCb.Checked = $false
-                                $capturedDohCb.Enabled = $false
-                            } else {
-                                $capturedDohCb.Enabled = $true
-                            }
+                        try { $d.DnsCombo.SelectedItem = $d.ConfigMap[$d.ProvName] } catch {}
+                        $d.DnsCombo.Tag = $d.DnsCombo.SelectedItem
+                        $d.NotifyConfig | Add-Member -MemberType NoteProperty -Name 'DNS_Provider' -Value $d.ProvName -Force
+                        try { & $d.SaveConfig } catch {}
+                        if ($d.Dot) { $d.Dot.BackColor = $d.ColorOrange }
+                        if ($d.ErrorLabel) { $d.ErrorLabel.Text = "DNS applied but verification pending" }
+                        if ($d.DohCb) {
+                            if ($d.ProvName -eq 'None') { $d.DohCb.Checked = $false; $d.DohCb.Enabled = $false } else { $d.DohCb.Enabled = $true }
                         }
+                        Write-Console "[DNS_Provider] Applied but verify failed" "WARN"
                     } else {
-                        if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
-                        if ($capturedErrorLabel) { $capturedErrorLabel.Text = "DNS change failed: $result" }
+                        if ($d.Dot) { $d.Dot.BackColor = $d.ColorError }
+                        if ($d.ErrorLabel) { $d.ErrorLabel.Text = "DNS change failed: $result" }
+                        Write-Console "[DNS_Provider] Failed: $result" "ERROR"
                     }
                 } catch {
-                    if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
-                    if ($capturedErrorLabel) { $capturedErrorLabel.Text = "DNS error: $($_.Exception.Message)" }
+                    if ($d.Dot) { $d.Dot.BackColor = $d.ColorError }
+                    if ($d.ErrorLabel) { $d.ErrorLabel.Text = "DNS error: $($_.Exception.Message)" }
+                    Write-Console "[DNS_Provider] Callback error: $($_.Exception.Message)" "ERROR"
                 }
-                $capturedPendingOps['DNS_Provider'] = $false
-            }.GetNewClosure()
+                $d.PendingOps['DNS_Provider'] = $false
+            }
         } catch {
             $script:FWPendingOps['DNS_Provider'] = $false
             if ($script:FWErrorLabel) { $script:FWErrorLabel.Text = "DNS: $($_.Exception.Message)" }
+            Write-Console "[DNS_Provider] Handler error: $($_.Exception.Message)" "ERROR"
         }
     })
     $sy += 52
@@ -4122,8 +4095,11 @@ if (-not `$success) { throw "No adapter could be configured" }
             }
 
             $script:FWPendingOps['DNS_DoH'] = $true
+            Write-Console "[DNS_DoH] Toggling to $($this.Checked)..." "INFO"
 
             $isChecked = $this.Checked
+            # Pessimistic: revert checkbox immediately, flip only on verified success
+            try { $script:SuppressSettingsSave = $true; $this.Checked = (-not $isChecked) } finally { $script:SuppressSettingsSave = $false }
             $dot = $script:FWStatusDots['DNS_DoH']
             if ($dot) { $dot.BackColor = [System.Drawing.Color]::FromArgb(255, 200, 60) }
 
@@ -4134,50 +4110,30 @@ if (-not `$success) { throw "No adapter could be configured" }
                 $pri6 = if ($dnsInfo) { $dnsInfo.Primary6 } else { '' }
                 $sec6 = if ($dnsInfo) { $dnsInfo.Secondary6 } else { '' }
                 $elevatedScript = @"
-# Enable global DoH support
-Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableAutoDoh' -Value 2 -Type DWord -ErrorAction Stop
-
-# Register DoH server templates with AutoUpgrade for all provider addresses (IPv4 + IPv6)
-`$dohServers = @('$pri','$sec','$pri6','$sec6')
-`$hasDohCmdlets = (`$null -ne (Get-Command -Name 'Add-DnsClientDohServerAddress' -ErrorAction SilentlyContinue))
-if (`$hasDohCmdlets) {
-    foreach (`$srv in `$dohServers) {
-        if (-not `$srv) { continue }
-        try {
-            `$existing = Get-DnsClientDohServerAddress -ServerAddress `$srv -ErrorAction SilentlyContinue
-            if (`$existing) {
-                Set-DnsClientDohServerAddress -ServerAddress `$srv -DohTemplate '$dohTemplate' -AllowFallbackToUdp `$false -AutoUpgrade `$true -ErrorAction Stop
-            } else {
-                Add-DnsClientDohServerAddress -ServerAddress `$srv -DohTemplate '$dohTemplate' -AllowFallbackToUdp `$false -AutoUpgrade `$true -ErrorAction Stop
-            }
-        } catch {}
-    }
+# Register DoH templates via netsh for all IPs (IPv4 + IPv6)
+`$allServers = @('$pri','$sec','$pri6','$sec6') | Where-Object { `$_ }
+foreach (`$srv in `$allServers) {
+    & netsh dns add encryption server=`$srv dohtemplate='$dohTemplate' autoupgrade=yes udpfallback=no 2>&1 | Out-Null
 }
 
-# Set DNS server addresses on active adapters (required for DoH to show as encrypted)
+# Set DNS addresses (v4+v6 merged — Windows applies each to correct address family)
 `$adapters = Get-NetAdapter | Where-Object { `$_.Status -eq 'Up' -and `$_.Virtual -eq `$false }
 foreach (`$adapter in `$adapters) {
-    `$allAddrs = @(`$dohServers | Where-Object { `$_ })
-    try {
-        Set-DnsClientServerAddress -InterfaceIndex `$adapter.ifIndex -ServerAddresses `$allAddrs -ErrorAction Stop
-    } catch {
-        `$v4Only = @('$pri','$sec') | Where-Object { `$_ -and `$_ -ne '' }
-        try { Set-DnsClientServerAddress -InterfaceIndex `$adapter.ifIndex -ServerAddresses `$v4Only -ErrorAction Stop } catch {}
-    }
+    try { Set-DnsClientServerAddress -InterfaceIndex `$adapter.ifIndex -ServerAddresses `$allServers -ErrorAction Stop } catch {}
 
-    # Configure per-adapter DoH via registry — DohFlags=2 + DohTemplate
+    # DohFlags=1 per IP via .NET Registry API (PowerShell path parsing breaks on IPv6 colons)
     `$guid = `$adapter.InterfaceGuid
-    `$basePath = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\`$guid\DohInterfaceSettings\Doh"
-    foreach (`$srv in `$dohServers) {
-        if (-not `$srv) { continue }
-        `$srvPath = "`$basePath\`$srv"
-        New-Item -Path `$srvPath -Force -ErrorAction SilentlyContinue | Out-Null
-        Set-ItemProperty -LiteralPath `$srvPath -Name 'DohFlags' -Value 2 -Type QWord -Force -ErrorAction SilentlyContinue
-        Set-ItemProperty -LiteralPath `$srvPath -Name 'DohTemplate' -Value '$dohTemplate' -Type String -Force -ErrorAction SilentlyContinue
+    `$regBase = "SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\`$guid\DohInterfaceSettings\Doh"
+    foreach (`$srv in `$allServers) {
+        `$subKey = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey("`$regBase\`$srv")
+        `$subKey.SetValue('DohFlags', [long]1, [Microsoft.Win32.RegistryValueKind]::QWord)
+        `$subKey.Close()
     }
 }
 
 ipconfig /flushdns | Out-Null
+try { Restart-Service Dnscache -Force -ErrorAction SilentlyContinue } catch {}
+Start-Sleep -Milliseconds 1500
 "@
             } else {
                 $pri = if ($dnsInfo) { $dnsInfo.Primary } else { '' }
@@ -4185,21 +4141,7 @@ ipconfig /flushdns | Out-Null
                 $pri6 = if ($dnsInfo) { $dnsInfo.Primary6 } else { '' }
                 $sec6 = if ($dnsInfo) { $dnsInfo.Secondary6 } else { '' }
                 $elevatedScript = @"
-# Disable global DoH
-Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableAutoDoh' -Value 0 -Type DWord -ErrorAction Stop
-
-# Reset AutoUpgrade on DoH server entries
-`$dohServers = @('$pri','$sec','$pri6','$sec6')
-if (`$null -ne (Get-Command -Name 'Set-DnsClientDohServerAddress' -ErrorAction SilentlyContinue)) {
-    foreach (`$srv in `$dohServers) {
-        if (-not `$srv) { continue }
-        try {
-            Set-DnsClientDohServerAddress -ServerAddress `$srv -AllowFallbackToUdp `$false -AutoUpgrade `$false -ErrorAction SilentlyContinue
-        } catch {}
-    }
-}
-
-# Remove per-adapter DoH registry entries
+# Remove per-adapter DoH registry (resets Windows Settings dropdown to "Off")
 `$adapters = Get-NetAdapter | Where-Object { `$_.Status -eq 'Up' -and `$_.Virtual -eq `$false }
 foreach (`$adapter in `$adapters) {
     `$guid = `$adapter.InterfaceGuid
@@ -4208,63 +4150,73 @@ foreach (`$adapter in `$adapters) {
 }
 
 ipconfig /flushdns | Out-Null
+try { Restart-Service Dnscache -Force -ErrorAction SilentlyContinue } catch {}
+Start-Sleep -Milliseconds 1500
 "@
             }
 
-            $capturedChecked = $isChecked
-            $capturedDot = $dot
-            $capturedNotifyConfig = $script:NotifyConfig
-            $capturedSaveConfig = ${function:Save-Config}
-            $capturedErrorLabel = $script:FWErrorLabel
-            $capturedPendingOps = $script:FWPendingOps
+            $script:FWCallbackData['DNS_DoH'] = @{
+                Checked = $isChecked; Dot = $dot; Cb = $this
+                NotifyConfig = $script:NotifyConfig; SaveConfig = ${function:Save-Config}
+                ErrorLabel = $script:FWErrorLabel; PendingOps = $script:FWPendingOps
+                ColorGreen = [System.Drawing.Color]::FromArgb(0, 200, 100)
+                ColorRed = [System.Drawing.Color]::FromArgb(220, 50, 60)
+                ColorOrange = [System.Drawing.Color]::FromArgb(255, 160, 40)
+                ColorError = [System.Drawing.Color]::FromArgb(255, 60, 60)
+            }
 
             # Build verify expression for DNS_DoH
             $verifyExpr = $script:VerifyScripts['DNS_DoH'] -f $(if ($isChecked) { '$true' } else { '$false' })
 
             & $script:InvokeElevatedFWAsync -ScriptContent $elevatedScript -ActionName "DNS_DoH" -VerifyScript $verifyExpr -OnComplete {
-                param($result)
+                param($actionName, $result)
+                $d = $script:FWCallbackData[$actionName]
+                if (-not $d) { return }
                 try {
                     if ($result -match '^VERIFIED') {
-                        $capturedNotifyConfig | Add-Member -MemberType NoteProperty -Name 'DNS_DoH' -Value $capturedChecked -Force
-                        & $capturedSaveConfig
-                        if ($capturedDot) {
-                            $capturedDot.BackColor = if ($capturedChecked) {
-                                [System.Drawing.Color]::FromArgb(0, 200, 100)
-                            } else {
-                                [System.Drawing.Color]::FromArgb(220, 50, 60)
-                            }
+                        try { $d.Cb.Checked = $d.Checked } catch {}
+                        $d.NotifyConfig | Add-Member -MemberType NoteProperty -Name 'DNS_DoH' -Value $d.Checked -Force
+                        try { & $d.SaveConfig } catch {}
+                        if ($d.Dot) {
+                            if ($d.Checked) { $d.Dot.BackColor = $d.ColorGreen } else { $d.Dot.BackColor = $d.ColorRed }
                         }
-                        if ($capturedErrorLabel) { $capturedErrorLabel.Text = "" }
-                        $capturedPendingOps['DNS_DoH'] = $false
+                        if ($d.ErrorLabel) { $d.ErrorLabel.Text = "" }
+                        Write-Console "[DNS_DoH] Verified (checked=$($d.Checked))" "OK"
+                        $d.PendingOps['DNS_DoH'] = $false
                     } elseif ($result -match '^SUCCESS') {
-                        $capturedNotifyConfig | Add-Member -MemberType NoteProperty -Name 'DNS_DoH' -Value $capturedChecked -Force
-                        & $capturedSaveConfig
-                        if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 160, 40) }
-                        if ($capturedErrorLabel) { $capturedErrorLabel.Text = "DoH applied but verification failed" }
-                        $capturedPendingOps['DNS_DoH'] = $false
+                        try { $d.Cb.Checked = $d.Checked } catch {}
+                        $d.NotifyConfig | Add-Member -MemberType NoteProperty -Name 'DNS_DoH' -Value $d.Checked -Force
+                        try { & $d.SaveConfig } catch {}
+                        if ($d.Dot) { $d.Dot.BackColor = $d.ColorOrange }
+                        if ($d.ErrorLabel) { $d.ErrorLabel.Text = "DoH applied but verification failed" }
+                        Write-Console "[DNS_DoH] Applied but verify failed" "WARN"
+                        $d.PendingOps['DNS_DoH'] = $false
                     } else {
-                        if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
-                        if ($capturedErrorLabel) { $capturedErrorLabel.Text = "DoH change failed: $result" }
-                        $capturedPendingOps['DNS_DoH'] = $false
+                        if ($d.Dot) { $d.Dot.BackColor = $d.ColorError }
+                        if ($d.ErrorLabel) { $d.ErrorLabel.Text = "DoH change failed: $result" }
+                        Write-Console "[DNS_DoH] Failed: $result" "ERROR"
+                        $d.PendingOps['DNS_DoH'] = $false
                     }
                 } catch {
-                    if ($capturedDot) { $capturedDot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
-                    if ($capturedErrorLabel) { $capturedErrorLabel.Text = "DoH error: $($_.Exception.Message)" }
-                    $capturedPendingOps['DNS_DoH'] = $false
+                    if ($d.Dot) { $d.Dot.BackColor = $d.ColorError }
+                    if ($d.ErrorLabel) { $d.ErrorLabel.Text = "DoH error: $($_.Exception.Message)" }
+                    Write-Console "[DNS_DoH] Callback error: $($_.Exception.Message)" "ERROR"
+                    $d.PendingOps['DNS_DoH'] = $false
                 }
-            }.GetNewClosure()
+            }
         } catch {
             if ($dot) { $dot.BackColor = [System.Drawing.Color]::FromArgb(255, 60, 60) }
             $script:LastFWError = "DNS_DoH: $($_.Exception.Message)"
             $script:FWPendingOps['DNS_DoH'] = $false
+            Write-Console "[DNS_DoH] Handler error: $($_.Exception.Message)" "ERROR"
         }
     })
 
     $sy += 52
     $sy += 8
 
-    # --- Background status detection ---
-    try {
+    # --- Background status detection (periodic, every 15 seconds) ---
+    $script:LaunchStatusJob = {
         $script:FWStatusJob = Start-Job -ScriptBlock {
             $results = @{}
             try {
@@ -4284,11 +4236,9 @@ ipconfig /flushdns | Out-Null
                     $results['FW_BlockOutbound'] = ($anyProfile.DefaultOutboundAction -eq 'Block') -or ($null -ne $outboundRule)
                 }
                 $icmpRule = Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockICMP' -ErrorAction SilentlyContinue
-                $icmpIPSec = (& netsh ipsec static show rule name="SM_ICMP_Rule" policy="SecurityMonitor" 2>&1) -notmatch 'error|not found'
-                $results['FW_BlockPing'] = ($null -ne $icmpRule) -or $icmpIPSec
+                $results['FW_BlockPing'] = ($null -ne $icmpRule)
                 $lanRule = Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_In_192' -ErrorAction SilentlyContinue
-                $lanIPSec = (& netsh ipsec static show rule name="SM_LAN_Rule" policy="SecurityMonitor" 2>&1) -notmatch 'error|not found'
-                $results['FW_BlockLAN'] = ($null -ne $lanRule) -or $lanIPSec
+                $results['FW_BlockLAN'] = ($null -ne $lanRule)
                 $devRule = Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_SMB_In' -ErrorAction SilentlyContinue
                 $llmnrDisabled = $false
                 try {
@@ -4299,21 +4249,18 @@ ipconfig /flushdns | Out-Null
                 $results['FW_BlockDevices'] = ($null -ne $devRule) -or $llmnrDisabled -or $ssdpDisabled
             } catch {}
             try {
-                $regVal = Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableAutoDoh' -ErrorAction SilentlyContinue
-                $globalDoH = ($null -ne $regVal -and $regVal.EnableAutoDoh -eq 2)
+                # Check per-adapter DoH flags (same as Windows Settings reads)
                 $adapterDoH = $false
-                if ($globalDoH) {
-                    $physAdapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false }
-                    foreach ($pa in $physAdapters) {
-                        $dohBase = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($pa.InterfaceGuid)\DohInterfaceSettings\Doh"
-                        $dohKeys = Get-ChildItem -LiteralPath $dohBase -ErrorAction SilentlyContinue
-                        if ($dohKeys -and @($dohKeys).Count -gt 0) {
-                            $adapterDoH = $true
-                            break
-                        }
+                $physAdapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false }
+                foreach ($pa in $physAdapters) {
+                    $dohBase = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($pa.InterfaceGuid)\DohInterfaceSettings\Doh"
+                    $dohKeys = Get-ChildItem -LiteralPath $dohBase -ErrorAction SilentlyContinue
+                    if ($dohKeys -and @($dohKeys).Count -gt 0) {
+                        $adapterDoH = $true
+                        break
                     }
                 }
-                $results['DNS_DoH'] = ($globalDoH -and $adapterDoH)
+                $results['DNS_DoH'] = $adapterDoH
             } catch { $results['DNS_DoH'] = $false }
             try {
                 $physicalAdapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false }
@@ -4341,13 +4288,18 @@ ipconfig /flushdns | Out-Null
             } catch {}
             return $results
         }
+    }
+
+    try {
+        $script:FWStatusLastLaunch = [DateTime]::Now
+        & $script:LaunchStatusJob
 
         $script:FWStatusTimer = New-Object System.Windows.Forms.Timer
         $script:FWStatusTimer.Interval = 500
         $script:FWStatusTimer.Add_Tick({
             try {
                 if ($script:FWStatusJob -and $script:FWStatusJob.State -in @('Completed','Failed')) {
-                    $script:FWStatusTimer.Stop()
+                    Write-Console "[StatusJob] Completed (state=$($script:FWStatusJob.State))" "DEBUG"
                     $statusResults = Receive-Job -Job $script:FWStatusJob -ErrorAction SilentlyContinue
                     Remove-Job -Job $script:FWStatusJob -Force -ErrorAction SilentlyContinue
                     $script:FWStatusJob = $null
@@ -4369,6 +4321,7 @@ ipconfig /flushdns | Out-Null
                                     if ($script:DnsProviderConfigMap.ContainsKey($providerName)) {
                                         $script:DnsProviderCombo.SelectedItem = $script:DnsProviderConfigMap[$providerName]
                                     }
+                                    $script:DnsProviderCombo.Tag = $script:DnsProviderCombo.SelectedItem
                                     if ($script:FWStatusDots.ContainsKey('DNS_Provider')) {
                                         $script:FWStatusDots['DNS_Provider'].BackColor = if ($providerName -ne 'None') {
                                             [System.Drawing.Color]::FromArgb(0, 200, 100)
@@ -4402,10 +4355,15 @@ ipconfig /flushdns | Out-Null
                                 }
                             }
                         } finally { $script:SuppressSettingsSave = $false }
-                        Save-Config
+                        try { $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $script:ConfigFilePath -Encoding UTF8 } catch {}
                     }
                 }
-            } catch {}
+                # Re-launch status job periodically (every 15 seconds)
+                if (-not $script:FWStatusJob -and ([DateTime]::Now - $script:FWStatusLastLaunch).TotalSeconds -ge 15) {
+                    $script:FWStatusLastLaunch = [DateTime]::Now
+                    & $script:LaunchStatusJob
+                }
+            } catch { Write-Console "[StatusTimer] Tick error: $($_.Exception.Message)" "ERROR" }
         })
         $script:FWStatusTimer.Start()
     } catch {}
@@ -4452,12 +4410,12 @@ ipconfig /flushdns | Out-Null
         try {
             if ($script:SuppressSettingsSave) { return }
             $script:NotifyConfig | Add-Member -MemberType NoteProperty -Name $this.Tag -Value $this.Checked -Force
-            Save-Config
+            try { $script:NotifyConfig | ConvertTo-Json | Set-Content -Path $script:ConfigFilePath -Encoding UTF8 } catch {}
         } catch { $script:LastFWError = "SettingsSave(Beep): $($_.Exception.Message)" }
     })
     $sy += 52
 
-  } catch { Write-Host "[!] Settings page error: $_" -ForegroundColor Red }
+  } catch { Write-Console "Settings page error: $_" "ERROR" }
 
     # ═══════════════════════════════════════════════════════════════
     #  PAGE 4: LOGS (open/view log files)
@@ -4592,7 +4550,56 @@ ipconfig /flushdns | Out-Null
 
         $ly += 50
     }
-  } catch { Write-Host "[!] Logs page error: $_" -ForegroundColor Red }
+  } catch { Write-Console "Logs page error: $_" "ERROR" }
+
+    # ═══════════════════════════════════════════════════════════════
+    #  PAGE 6: CONSOLE (live debug/error output)
+    # ═══════════════════════════════════════════════════════════════
+  try {
+    $consolePage = $pages["Console"]
+
+    $consoleTitle = New-Object System.Windows.Forms.Label
+    $consoleTitle.Text = "Console Output"
+    $consoleTitle.Location = New-Object System.Drawing.Point(25, 18)
+    $consoleTitle.Size = New-Object System.Drawing.Size(400, 32)
+    $consoleTitle.Font = New-Object System.Drawing.Font("Segoe UI", 15, [System.Drawing.FontStyle]::Bold)
+    $consoleTitle.ForeColor = [System.Drawing.Color]::FromArgb(0, 220, 130)
+    $consolePage.Controls.Add($consoleTitle)
+
+    $consoleDesc = New-Object System.Windows.Forms.Label
+    $consoleDesc.Text = "Live log of all operations, errors, and system events."
+    $consoleDesc.Location = New-Object System.Drawing.Point(25, 50)
+    $consoleDesc.Size = New-Object System.Drawing.Size(500, 20)
+    $consoleDesc.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $consoleDesc.ForeColor = $colTextDim
+    $consolePage.Controls.Add($consoleDesc)
+
+    $consoleClearBtn = New-Object System.Windows.Forms.Button
+    $consoleClearBtn.Text = "Clear"
+    $consoleClearBtn.Location = New-Object System.Drawing.Point(695, 16)
+    $consoleClearBtn.Size = New-Object System.Drawing.Size(80, 30)
+    $consoleClearBtn.FlatStyle = "Flat"
+    $consoleClearBtn.BackColor = [System.Drawing.Color]::FromArgb(50, 50, 70)
+    $consoleClearBtn.ForeColor = $colTextMain
+    $consoleClearBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $consoleClearBtn.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+    $consolePage.Controls.Add($consoleClearBtn)
+
+    $script:ConsoleBox = New-Object System.Windows.Forms.RichTextBox
+    $script:ConsoleBox.Location = New-Object System.Drawing.Point(25, 78)
+    $script:ConsoleBox.Size = New-Object System.Drawing.Size(750, 500)
+    $script:ConsoleBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $script:ConsoleBox.BackColor = [System.Drawing.Color]::FromArgb(12, 12, 20)
+    $script:ConsoleBox.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 220)
+    $script:ConsoleBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $script:ConsoleBox.ReadOnly = $true
+    $script:ConsoleBox.WordWrap = $false
+    $script:ConsoleBox.ScrollBars = "Both"
+    $consolePage.Controls.Add($script:ConsoleBox)
+
+    $consoleClearBtn.Add_Click({ $script:ConsoleBox.Clear() })
+
+  } catch { Write-Host "[!] Console page error: $_" -ForegroundColor Red }
 
     # ── Status updater timer ──
     # ── Cached data for dashboard (updated by background runspace, read by UI timer) ──
@@ -4787,14 +4794,14 @@ ipconfig /flushdns | Out-Null
     $script:DashboardOpenTab = $OpenTab
 
     # Switch page immediately (sets Visible/BringToFront)
-    try { & $script:SwitchPageFn $OpenTab } catch { Write-Host "[!] SwitchPage error: $_" -ForegroundColor Red }
+    try { & $script:SwitchPageFn $OpenTab } catch { Write-Console "SwitchPage error: $_" "ERROR" }
 
     # Also switch after form is shown to ensure rendering
     $form.Add_Shown({
         try {
             & $script:SwitchPageFn $script:DashboardOpenTab
             $script:ContentPanel.Refresh()
-        } catch { Write-Host "[!] Shown SwitchPage error: $_" -ForegroundColor Red }
+        } catch { Write-Console "Shown SwitchPage error: $_" "ERROR" }
     })
 
     $form.Show()
@@ -4968,7 +4975,7 @@ function Initialize-TrayIcon {
     $script:TrayIcon.Add_MouseDoubleClick({
         param($s, $e)
         if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
-            try { Show-Dashboard } catch { Write-Host "[!] Dashboard error: $_" -ForegroundColor Red }
+            try { Show-Dashboard } catch { Write-Console "Dashboard error: $_" "ERROR" }
         }
     })
 
@@ -4981,7 +4988,7 @@ function Initialize-TrayIcon {
 
     $dashItem = New-Object System.Windows.Forms.ToolStripMenuItem("Open Dashboard")
     $dashItem.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-    $dashItem.Add_Click({ try { Show-Dashboard } catch { Write-Host "[!] Dashboard error: $_" -ForegroundColor Red } })
+    $dashItem.Add_Click({ try { Show-Dashboard } catch { Write-Console "Dashboard error: $_" "ERROR" } })
     [void]$contextMenu.Items.Add($dashItem)
 
     $alertsItem = New-Object System.Windows.Forms.ToolStripMenuItem("Alerts")
@@ -5272,7 +5279,9 @@ function Send-Alert {
         } else {
             Write-Alert "$Title - $Message"
         }
-        if ($showThreat) {
+        $beepProp = $script:NotifyConfig.PSObject.Properties['BeepOnAlert']
+        $beepEnabled = ($null -ne $beepProp -and $beepProp.Value -eq $true)
+        if ($showThreat -and $beepEnabled) {
             try {
                 if ($severity -eq "CRIT") { [System.Console]::Beep(800, 200); [System.Console]::Beep(1200, 200); [System.Console]::Beep(1600, 300) }
                 elseif ($severity -eq "HIGH") { [System.Console]::Beep(1000, 300); [System.Console]::Beep(1500, 300) }
@@ -6202,6 +6211,7 @@ function Start-Monitoring {
 
 "@
     Write-Host $banner -ForegroundColor Cyan
+    Write-Console "SecurityMonitor v7.0 starting..." "OK"
     Write-Log "=== MONITORING STARTED === Computer: $env:COMPUTERNAME | User: $env:USERNAME" -Level "INFO"
 
     # ── Acquire a system-wide mutex so Launcher.ps1 can detect us ──
@@ -6562,7 +6572,7 @@ function Start-Monitoring {
 
     # Auto-open dashboard on first launch (skip in silent/tray-only mode)
     if (-not $Silent) {
-        try { Show-Dashboard } catch { Write-Host "[!] Auto-open dashboard error: $_" -ForegroundColor Red }
+        try { Show-Dashboard } catch { Write-Console "Auto-open dashboard error: $_" "ERROR" }
     }
 
     # Run the Windows Forms message loop (keeps UI responsive)
@@ -6606,4 +6616,5 @@ try {
     Write-Log "=== MONITORING STOPPED === Total alerts: $script:AlertCount" -Level "INFO"
     Write-Host "`nMonitoring stopped. Total alerts: $script:AlertCount" -ForegroundColor Yellow
     Write-Host "Log files: $LogDir" -ForegroundColor Cyan
+    Write-Console "Monitoring stopped. Total alerts: $script:AlertCount" "WARN"
 }
