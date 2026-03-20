@@ -1,7 +1,7 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    SecurityMonitor installation script
+    All-in-One Whitehat Security Tool — installation script
 .DESCRIPTION
     Sets up the monitoring script to run automatically at Windows startup,
     creates a scheduled task, desktop shortcut, and starts monitoring immediately.
@@ -9,15 +9,15 @@
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $monitorScript = Join-Path $scriptDir "SecurityMonitor.ps1"
-$taskName = "SecurityMonitor"
+$taskName = "WhitehatSecurity"
 
-Write-Host "=== SecurityMonitor Setup ===" -ForegroundColor Cyan
+Write-Host "=== Whitehat Security Setup ===" -ForegroundColor Cyan
 
 # 0. Download project files from GitHub if SecurityMonitor.ps1 is missing (one-liner install)
 if (-not (Test-Path $monitorScript)) {
-    Write-Host "[0/6] Downloading SecurityMonitor from GitHub..." -ForegroundColor Yellow
-    $repoZip = Join-Path $env:TEMP "SecurityMonitor.zip"
-    $extractDir = Join-Path $env:TEMP "SecurityMonitor_extract"
+    Write-Host "[0/6] Downloading Whitehat Security from GitHub..." -ForegroundColor Yellow
+    $repoZip = Join-Path $env:TEMP "WHS_download.zip"
+    $extractDir = Join-Path $env:TEMP "WHS_extract"
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         Invoke-WebRequest -Uri "https://github.com/xyzwebmaster/All-in-One-Whitehat-Security-Tool/archive/refs/heads/master.zip" -OutFile $repoZip -UseBasicParsing
@@ -87,14 +87,14 @@ Write-Host "  -> Scheduled task created (auto-starts at every logon)" -Foregroun
 Write-Host "[4/6] Creating desktop shortcut..."
 $launcherScript = Join-Path $scriptDir "Launcher.ps1"
 $desktopPath = [System.Environment]::GetFolderPath("Desktop")
-$shortcutPath = Join-Path $desktopPath "SecurityMonitor.lnk"
+$shortcutPath = Join-Path $desktopPath "Whitehat Security.lnk"
 try {
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = "powershell.exe"
     $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcherScript`""
     $shortcut.WorkingDirectory = $scriptDir
-    $shortcut.Description = "SecurityMonitor - Start or open dashboard"
+    $shortcut.Description = "All-in-One Whitehat Security Tool"
     $shortcut.IconLocation = "shell32.dll,77"
     $shortcut.Save()
     Write-Host "  -> Desktop shortcut created: $shortcutPath" -ForegroundColor Green
@@ -111,7 +111,7 @@ if ($state -eq "Running") {
     Write-Host "  -> Monitoring is running in the background" -ForegroundColor Green
     # Signal the running instance to open its dashboard
     Start-Sleep -Seconds 2
-    $signalFile = Join-Path $env:TEMP "SecurityMonitor_OpenDashboard.signal"
+    $signalFile = Join-Path $env:TEMP "WHS_OpenDashboard.signal"
     [System.IO.File]::WriteAllText($signalFile, "open")
     Write-Host "  -> Dashboard opening..." -ForegroundColor Green
 } else {

@@ -139,8 +139,8 @@ public static class SmWfpEngine
     {
         var sl = new FWPM_SUBLAYER0();
         sl.subLayerKey = SM_SUBLAYER_KEY;
-        sl.displayData.name = "SecurityMonitor WFP";
-        sl.displayData.description = "SecurityMonitor Block Filters";
+        sl.displayData.name = "Whitehat Security WFP";
+        sl.displayData.description = "Whitehat Security Block Filters";
         sl.weight = 0xFFFF;
         sl.flags = 0;
         sl.providerKey = IntPtr.Zero;
@@ -162,7 +162,7 @@ public static class SmWfpEngine
         var f = new FWPM_FILTER0();
         f.filterKey = filterKey;
         f.displayData.name = name;
-        f.displayData.description = "SecurityMonitor WFP Block";
+        f.displayData.description = "Whitehat Security WFP Block";
         f.flags = 0;
         f.providerKey = IntPtr.Zero;
         f.providerData.size = 0;

@@ -1,15 +1,15 @@
 ﻿#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Hardware and System Security Monitoring Tool
+    All-in-One Whitehat Security Tool
 .DESCRIPTION
-    Continuously monitors network connections, processes, firmware hash integrity,
-    driver changes, and security events. Produces timestamped evidence logs.
-    On first run, shows a GUI to let the user choose which alert types to receive.
+    Real-time security monitoring with 8-engine AI threat detection. Monitors network
+    connections, processes, firmware integrity, drivers, registry, and security events.
+    Features memory scanning, BYOVD detection, hidden process detection, and more.
 .AUTHOR
-    SecurityMonitor - Forensic Monitoring
+    All-in-One Whitehat Security Tool
 .VERSION
-    7.0.0
+    7.1.0
 #>
 
 param(
@@ -28,7 +28,7 @@ function Show-ConfigGUI {
     Add-Type -AssemblyName System.Drawing
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "SecurityMonitor - Notification Settings"
+    $form.Text = "Whitehat Security - Notification Settings"
     $form.Size = New-Object System.Drawing.Size(520, 580)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
@@ -192,7 +192,7 @@ function Test-NotifyEnabled {
 }
 
 # --- AUTO-START REGISTRATION ---
-$taskName = "SecurityMonitor"
+$taskName = "WhitehatSecurity"
 $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if (-not $existingTask) {
     try {
@@ -224,7 +224,7 @@ if (-not $existingTask) {
 
 # --- DESKTOP SHORTCUT (points to Launcher.ps1 - smart start/open) ---
 $desktopPath = [System.Environment]::GetFolderPath("Desktop")
-$shortcutPath = Join-Path $desktopPath "SecurityMonitor.lnk"
+$shortcutPath = Join-Path $desktopPath "Whitehat Security.lnk"
 $launcherPath = Join-Path $PSScriptRoot "Launcher.ps1"
 # Always recreate shortcut to ensure it points to Launcher.ps1
 try {
@@ -233,7 +233,7 @@ try {
     $shortcut.TargetPath = "powershell.exe"
     $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcherPath`""
     $shortcut.WorkingDirectory = $PSScriptRoot
-    $shortcut.Description = "SecurityMonitor - Start or open dashboard"
+    $shortcut.Description = "All-in-One Whitehat Security Tool"
     $shortcut.IconLocation = "shell32.dll,77"
     $shortcut.Save()
     Write-Host "[+] Desktop shortcut created/updated: $shortcutPath" -ForegroundColor Green
@@ -602,10 +602,10 @@ function Start-AiThreatScan {
     $procMap = @{}
     foreach ($p in $procs) { $procMap[$p.ProcessId] = $p }
 
-    # Build self-exclusion set: own PID + all ancestor/child PIDs belonging to SecurityMonitor
+    # Build self-exclusion set: own PID + all ancestor/child PIDs belonging to Whitehat Security
     $selfPids = [System.Collections.Generic.HashSet[int]]::new()
     [void]$selfPids.Add($PID)
-    # Add parent chain (Launcher → PowerShell hosting SecurityMonitor)
+    # Add parent chain (Launcher → PowerShell hosting Whitehat Security)
     $curPid = $PID
     for ($i = 0; $i -lt 5; $i++) {
         $parent = $procMap[$curPid]
@@ -1226,7 +1226,7 @@ function Show-Dashboard {
 
     # --- Main form ---
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "SecurityMonitor Dashboard"
+    $form.Text = "Whitehat Security Dashboard"
     $form.Size = New-Object System.Drawing.Size(1050, 680)
     $form.StartPosition = "CenterScreen"
     $form.BackColor = $colBg
@@ -1259,7 +1259,7 @@ function Show-Dashboard {
 
     # Logo / title area
     $logoLabel = New-Object System.Windows.Forms.Label
-    $logoLabel.Text = "SECURITY`nMONITOR"
+    $logoLabel.Text = "WHITEHAT`nSECURITY"
     $logoLabel.Location = New-Object System.Drawing.Point(0, 15)
     $logoLabel.Size = New-Object System.Drawing.Size(200, 50)
     $logoLabel.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Bold)
@@ -1268,7 +1268,7 @@ function Show-Dashboard {
     $sidebar.Controls.Add($logoLabel)
 
     $verLabel = New-Object System.Windows.Forms.Label
-    $verLabel.Text = "v7.0 Dashboard"
+    $verLabel.Text = "v7.1 Dashboard"
     $verLabel.Location = New-Object System.Drawing.Point(0, 65)
     $verLabel.Size = New-Object System.Drawing.Size(200, 18)
     $verLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
@@ -2212,7 +2212,7 @@ function Show-Dashboard {
         try {
             $sfd = New-Object System.Windows.Forms.SaveFileDialog
             $sfd.Filter = "CSV (*.csv)|*.csv|JSON (*.json)|*.json"
-            $sfd.FileName = "SecurityMonitor_Alerts_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+            $sfd.FileName = "WHS_Alerts_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
             if ($sfd.ShowDialog() -eq "OK") {
                 $data = $script:AlertHistory
                 if ($sfd.FileName -match '\.json$') {
@@ -2388,7 +2388,7 @@ function Show-Dashboard {
     $blockIpBtn.Add_Click({
         if ($this.Tag) {
             $ip = $this.Tag
-            $ruleName = "SecurityMonitor_Block_$ip"
+            $ruleName = "WHS_Block_$ip"
             $confirm = [System.Windows.Forms.MessageBox]::Show(
                 "Are you sure you want to block IP address $ip ?`n`nThis will create Windows Firewall rules to block all inbound and outbound traffic from/to this IP.`n`nRule name: $ruleName`n`nA UAC prompt will appear for elevation.",
                 "Block IP - Confirm",
@@ -2397,8 +2397,8 @@ function Show-Dashboard {
             )
             if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
                 try {
-                    $scriptFile = Join-Path $env:TEMP "SecurityMonitor_BlockIP_$(Get-Random).ps1"
-                    $resultFile = Join-Path $env:TEMP "SecurityMonitor_BlockResult_$(Get-Random).txt"
+                    $scriptFile = Join-Path $env:TEMP "WHS_BlockIP_$(Get-Random).ps1"
+                    $resultFile = Join-Path $env:TEMP "WHS_BlockResult_$(Get-Random).txt"
 
                     $fwScript = @"
 try {
@@ -2510,7 +2510,7 @@ try {
                         [System.Windows.Forms.MessageBox]::Show("No baseline snapshot available for this key.", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
                         return
                     }
-                    $tmpFile = Join-Path $env:TEMP "SecurityMonitor_snapshot_$(Get-Random).xml"
+                    $tmpFile = Join-Path $env:TEMP "WHS_snapshot_$(Get-Random).xml"
                     $snapshot | Export-Clixml -Path $tmpFile -Force
                     @"
 `$snapshot = Import-Clixml -Path '$tmpFile'
@@ -2533,8 +2533,8 @@ Remove-Item -Path '$tmpFile' -Force -ErrorAction SilentlyContinue
             if (-not $psCmd) { return }
 
             # Write command to temp script file for clean elevation
-            $scriptFile = Join-Path $env:TEMP "SecurityMonitor_RegFix_$(Get-Random).ps1"
-            $resultFile = Join-Path $env:TEMP "SecurityMonitor_RegResult_$(Get-Random).txt"
+            $scriptFile = Join-Path $env:TEMP "WHS_RegFix_$(Get-Random).ps1"
+            $resultFile = Join-Path $env:TEMP "WHS_RegResult_$(Get-Random).txt"
 
             # Wrap command with result reporting
             $fullScript = @"
@@ -3612,15 +3612,15 @@ try {
         'FW_DomainProfile'  = '$p = Get-NetFirewallProfile -Name Domain -EA SilentlyContinue; $null -ne $p -and $p.Enabled -eq {0}'
         'FW_PrivateProfile' = '$p = Get-NetFirewallProfile -Name Private -EA SilentlyContinue; $null -ne $p -and $p.Enabled -eq {0}'
         'FW_PublicProfile'  = '$p = Get-NetFirewallProfile -Name Public -EA SilentlyContinue; $null -ne $p -and $p.Enabled -eq {0}'
-        'FW_BlockInbound'   = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_BlockAllInbound" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
-        'FW_BlockOutbound'  = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_BlockAllOutbound" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
-        'FW_BlockPing'      = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_BlockICMP" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
-        'FW_BlockLAN'       = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_BlockLAN_In_192" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
-        'FW_BlockDevices'   = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_BlockDev_SMB_In" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
-        'PF_BlockTrackers'  = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) {{ $h -match "SecurityMonitor-Trackers-Start" }} else {{ $h -notmatch "SecurityMonitor-Trackers-Start" }}'
-        'PF_BlockMalware'   = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) {{ $h -match "SecurityMonitor-Malware-Start" }} else {{ $h -notmatch "SecurityMonitor-Malware-Start" }}'
-        'PF_BlockTelemetry' = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) {{ $h -match "SecurityMonitor-Telemetry-Start" }} else {{ $h -notmatch "SecurityMonitor-Telemetry-Start" }}'
-        'PF_BlockDNSBypass' = '$r = Get-NetFirewallRule -DisplayName "SecurityMonitor_DNSLock_Out" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
+        'FW_BlockInbound'   = '$r = Get-NetFirewallRule -DisplayName "WHS_BlockAllInbound" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
+        'FW_BlockOutbound'  = '$r = Get-NetFirewallRule -DisplayName "WHS_BlockAllOutbound" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
+        'FW_BlockPing'      = '$r = Get-NetFirewallRule -DisplayName "WHS_BlockICMP" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
+        'FW_BlockLAN'       = '$r = Get-NetFirewallRule -DisplayName "WHS_BlockLAN_In_192" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
+        'FW_BlockDevices'   = '$r = Get-NetFirewallRule -DisplayName "WHS_BlockDev_SMB_In" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
+        'PF_BlockTrackers'  = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) {{ $h -match "WHS-Trackers-Start" }} else {{ $h -notmatch "WHS-Trackers-Start" }}'
+        'PF_BlockMalware'   = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) {{ $h -match "WHS-Malware-Start" }} else {{ $h -notmatch "WHS-Malware-Start" }}'
+        'PF_BlockTelemetry' = '$h = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -EA SilentlyContinue; if ({0}) {{ $h -match "WHS-Telemetry-Start" }} else {{ $h -notmatch "WHS-Telemetry-Start" }}'
+        'PF_BlockDNSBypass' = '$r = Get-NetFirewallRule -DisplayName "WHS_DNSLock_Out" -EA SilentlyContinue; ($null -ne $r) -eq {0}'
         'DNS_DoH'           = 'if ({0}) {{ $ok = $false; foreach ($a in (Get-NetAdapter | Where-Object {{ $_.Status -eq "Up" -and $_.Virtual -eq $false }})) {{ $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey("SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($a.InterfaceGuid)\DohInterfaceSettings\Doh"); if ($k) {{ $n = $k.GetSubKeyNames(); $k.Close(); if ($n.Count -gt 0) {{ $ok = $true; break }} }} }}; $ok }} else {{ $clean = $true; foreach ($a in (Get-NetAdapter | Where-Object {{ $_.Status -eq "Up" -and $_.Virtual -eq $false }})) {{ $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey("SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters\$($a.InterfaceGuid)\DohInterfaceSettings\Doh"); if ($k) {{ $n = $k.GetSubKeyNames(); $k.Close(); if ($n.Count -gt 0) {{ $clean = $false; break }} }} }}; $clean }}'
         'DNS_Provider'      = ''
     }
@@ -3854,14 +3854,14 @@ try {
                         if ($isChecked) {
                             $elevatedScript = @'
 Set-NetFirewallProfile -All -DefaultInboundAction Block -ErrorAction SilentlyContinue
-Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllInbound' -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllInbound' -Direction Inbound -Action Block -Protocol Any -Profile Any -ErrorAction Stop | Out-Null
+Remove-NetFirewallRule -DisplayName 'WHS_BlockAllInbound' -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName 'WHS_BlockAllInbound' -Direction Inbound -Action Block -Protocol Any -Profile Any -ErrorAction Stop | Out-Null
 & "$PSScriptRoot\SmWfpEngine.ps1" -Action BlockInbound 2>&1 | Out-Null
 '@
                         } else {
                             $elevatedScript = @'
 Set-NetFirewallProfile -All -DefaultInboundAction Allow -ErrorAction SilentlyContinue
-Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllInbound' -ErrorAction SilentlyContinue
+Remove-NetFirewallRule -DisplayName 'WHS_BlockAllInbound' -ErrorAction SilentlyContinue
 & "$PSScriptRoot\SmWfpEngine.ps1" -Action UnblockInbound 2>&1 | Out-Null
 '@
                         }
@@ -3870,14 +3870,14 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllInbound' -ErrorActi
                         if ($isChecked) {
                             $elevatedScript = @'
 Set-NetFirewallProfile -All -DefaultOutboundAction Block -ErrorAction SilentlyContinue
-Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllOutbound' -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllOutbound' -Direction Outbound -Action Block -Protocol Any -Profile Any -ErrorAction Stop | Out-Null
+Remove-NetFirewallRule -DisplayName 'WHS_BlockAllOutbound' -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName 'WHS_BlockAllOutbound' -Direction Outbound -Action Block -Protocol Any -Profile Any -ErrorAction Stop | Out-Null
 & "$PSScriptRoot\SmWfpEngine.ps1" -Action BlockOutbound 2>&1 | Out-Null
 '@
                         } else {
                             $elevatedScript = @'
 Set-NetFirewallProfile -All -DefaultOutboundAction Allow -ErrorAction SilentlyContinue
-Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllOutbound' -ErrorAction SilentlyContinue
+Remove-NetFirewallRule -DisplayName 'WHS_BlockAllOutbound' -ErrorAction SilentlyContinue
 & "$PSScriptRoot\SmWfpEngine.ps1" -Action UnblockOutbound 2>&1 | Out-Null
 '@
                         }
@@ -3885,29 +3885,29 @@ Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllOutbound' -ErrorAct
                     'FW_BlockPing' {
                         if ($isChecked) {
                             $elevatedScript = @'
-Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockICMP' -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockICMP' -Direction Inbound -Protocol ICMPv4 -IcmpType 8 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
+Remove-NetFirewallRule -DisplayName 'WHS_BlockICMP' -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName 'WHS_BlockICMP' -Direction Inbound -Protocol ICMPv4 -IcmpType 8 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
 '@
                         } else {
                             $elevatedScript = @'
-Remove-NetFirewallRule -DisplayName 'SecurityMonitor_BlockICMP' -ErrorAction SilentlyContinue
+Remove-NetFirewallRule -DisplayName 'WHS_BlockICMP' -ErrorAction SilentlyContinue
 '@
                         }
                     }
                     'FW_BlockLAN' {
                         if ($isChecked) {
                             $elevatedScript = @'
-Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_In_192' -Direction Inbound -Action Block -RemoteAddress '192.168.0.0/16' -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_Out_192' -Direction Outbound -Action Block -RemoteAddress '192.168.0.0/16' -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_In_10' -Direction Inbound -Action Block -RemoteAddress '10.0.0.0/8' -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_Out_10' -Direction Outbound -Action Block -RemoteAddress '10.0.0.0/8' -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_In_172' -Direction Inbound -Action Block -RemoteAddress '172.16.0.0/12' -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_Out_172' -Direction Outbound -Action Block -RemoteAddress '172.16.0.0/12' -Profile Any -ErrorAction SilentlyContinue | Out-Null
+Get-NetFirewallRule -DisplayName 'WHS_BlockLAN_*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName 'WHS_BlockLAN_In_192' -Direction Inbound -Action Block -RemoteAddress '192.168.0.0/16' -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockLAN_Out_192' -Direction Outbound -Action Block -RemoteAddress '192.168.0.0/16' -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockLAN_In_10' -Direction Inbound -Action Block -RemoteAddress '10.0.0.0/8' -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockLAN_Out_10' -Direction Outbound -Action Block -RemoteAddress '10.0.0.0/8' -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockLAN_In_172' -Direction Inbound -Action Block -RemoteAddress '172.16.0.0/12' -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockLAN_Out_172' -Direction Outbound -Action Block -RemoteAddress '172.16.0.0/12' -Profile Any -ErrorAction SilentlyContinue | Out-Null
 '@
                         } else {
                             $elevatedScript = @'
-Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+Get-NetFirewallRule -DisplayName 'WHS_BlockLAN_*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
 '@
                         }
                     }
@@ -3915,19 +3915,19 @@ Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_*' -ErrorAction Silen
                         if ($isChecked) {
                             $elevatedScript = @'
 # Layer 1: Windows Firewall rules
-Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_SMB_In' -Direction Inbound -Protocol TCP -LocalPort @(445,139) -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_SMB_Out' -Direction Outbound -Protocol TCP -RemotePort @(445,139) -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_NetBIOS_In' -Direction Inbound -Protocol UDP -LocalPort @(137,138) -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_NetBIOS_Out' -Direction Outbound -Protocol UDP -RemotePort @(137,138) -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_LLMNR_In' -Direction Inbound -Protocol UDP -LocalPort 5355 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_LLMNR_Out' -Direction Outbound -Protocol UDP -RemotePort 5355 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_mDNS_In' -Direction Inbound -Protocol UDP -LocalPort 5353 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_mDNS_Out' -Direction Outbound -Protocol UDP -RemotePort 5353 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_SSDP_In' -Direction Inbound -Protocol UDP -LocalPort 1900 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_SSDP_Out' -Direction Outbound -Protocol UDP -RemotePort 1900 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_UPnP_In' -Direction Inbound -Protocol TCP -LocalPort 2869 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_UPnP_Out' -Direction Outbound -Protocol TCP -RemotePort 2869 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
+Get-NetFirewallRule -DisplayName 'WHS_BlockDev_*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName 'WHS_BlockDev_SMB_In' -Direction Inbound -Protocol TCP -LocalPort @(445,139) -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockDev_SMB_Out' -Direction Outbound -Protocol TCP -RemotePort @(445,139) -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockDev_NetBIOS_In' -Direction Inbound -Protocol UDP -LocalPort @(137,138) -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockDev_NetBIOS_Out' -Direction Outbound -Protocol UDP -RemotePort @(137,138) -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockDev_LLMNR_In' -Direction Inbound -Protocol UDP -LocalPort 5355 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockDev_LLMNR_Out' -Direction Outbound -Protocol UDP -RemotePort 5355 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockDev_mDNS_In' -Direction Inbound -Protocol UDP -LocalPort 5353 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockDev_mDNS_Out' -Direction Outbound -Protocol UDP -RemotePort 5353 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockDev_SSDP_In' -Direction Inbound -Protocol UDP -LocalPort 1900 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockDev_SSDP_Out' -Direction Outbound -Protocol UDP -RemotePort 1900 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockDev_UPnP_In' -Direction Inbound -Protocol TCP -LocalPort 2869 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_BlockDev_UPnP_Out' -Direction Outbound -Protocol TCP -RemotePort 2869 -Action Block -Profile Any -ErrorAction SilentlyContinue | Out-Null
 # Layer 2: OS-level service/registry blocking (completely firewall-independent)
 Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces' -ErrorAction SilentlyContinue | ForEach-Object {
     Set-ItemProperty -Path $_.PSPath -Name 'NetbiosOptions' -Value 2 -Type DWord -ErrorAction SilentlyContinue
@@ -3943,7 +3943,7 @@ Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force -ErrorAction Silent
 '@
                         } else {
                             $elevatedScript = @'
-Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+Get-NetFirewallRule -DisplayName 'WHS_BlockDev_*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
 Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces' -ErrorAction SilentlyContinue | ForEach-Object {
     Set-ItemProperty -Path $_.PSPath -Name 'NetbiosOptions' -Value 0 -Type DWord -ErrorAction SilentlyContinue
 }
@@ -3957,15 +3957,15 @@ Set-Service upnphost -StartupType Manual -ErrorAction SilentlyContinue
                     'PF_BlockTrackers' {
                         $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
                         if ($isChecked) {
-                            $lines = @("`n# SecurityMonitor-Trackers-Start")
+                            $lines = @("`n# WHS-Trackers-Start")
                             foreach ($d in $script:TrackerDomains) { $lines += "0.0.0.0 $d" }
-                            $lines += "# SecurityMonitor-Trackers-End"
+                            $lines += "# WHS-Trackers-End"
                             $content = $lines -join "`n"
                             $elevatedScript = @"
 `$hostsFile = '$hostsPath'
 `$h = Get-Content `$hostsFile -Raw -ErrorAction SilentlyContinue
-if (`$h -match 'SecurityMonitor-Trackers-Start') {
-    `$h = `$h -replace '(?s)\r?\n?# SecurityMonitor-Trackers-Start.*?# SecurityMonitor-Trackers-End\r?\n?', ''
+if (`$h -match 'WHS-Trackers-Start') {
+    `$h = `$h -replace '(?s)\r?\n?# WHS-Trackers-Start.*?# WHS-Trackers-End\r?\n?', ''
     Set-Content -Path `$hostsFile -Value `$h -Encoding ASCII -NoNewline
 }
 Add-Content -Path `$hostsFile -Value '$($content -replace "'","''")' -Encoding ASCII
@@ -3975,7 +3975,7 @@ ipconfig /flushdns | Out-Null
                             $elevatedScript = @"
 `$h = Get-Content '$hostsPath' -Raw -ErrorAction Stop
 if ([string]::IsNullOrEmpty(`$h)) { `$h = '' }
-`$h = `$h -replace '(?s)\r?\n?# SecurityMonitor-Trackers-Start.*?# SecurityMonitor-Trackers-End\r?\n?', ''
+`$h = `$h -replace '(?s)\r?\n?# WHS-Trackers-Start.*?# WHS-Trackers-End\r?\n?', ''
 Set-Content -Path '$hostsPath' -Value `$h -Encoding ASCII -NoNewline
 ipconfig /flushdns | Out-Null
 "@
@@ -3984,15 +3984,15 @@ ipconfig /flushdns | Out-Null
                     'PF_BlockMalware' {
                         $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
                         if ($isChecked) {
-                            $lines = @("`n# SecurityMonitor-Malware-Start")
+                            $lines = @("`n# WHS-Malware-Start")
                             foreach ($d in $script:MalwareDomains) { $lines += "0.0.0.0 $d" }
-                            $lines += "# SecurityMonitor-Malware-End"
+                            $lines += "# WHS-Malware-End"
                             $content = $lines -join "`n"
                             $elevatedScript = @"
 `$hostsFile = '$hostsPath'
 `$h = Get-Content `$hostsFile -Raw -ErrorAction SilentlyContinue
-if (`$h -match 'SecurityMonitor-Malware-Start') {
-    `$h = `$h -replace '(?s)\r?\n?# SecurityMonitor-Malware-Start.*?# SecurityMonitor-Malware-End\r?\n?', ''
+if (`$h -match 'WHS-Malware-Start') {
+    `$h = `$h -replace '(?s)\r?\n?# WHS-Malware-Start.*?# WHS-Malware-End\r?\n?', ''
     Set-Content -Path `$hostsFile -Value `$h -Encoding ASCII -NoNewline
 }
 Add-Content -Path `$hostsFile -Value '$($content -replace "'","''")' -Encoding ASCII
@@ -4002,7 +4002,7 @@ ipconfig /flushdns | Out-Null
                             $elevatedScript = @"
 `$h = Get-Content '$hostsPath' -Raw -ErrorAction Stop
 if ([string]::IsNullOrEmpty(`$h)) { `$h = '' }
-`$h = `$h -replace '(?s)\r?\n?# SecurityMonitor-Malware-Start.*?# SecurityMonitor-Malware-End\r?\n?', ''
+`$h = `$h -replace '(?s)\r?\n?# WHS-Malware-Start.*?# WHS-Malware-End\r?\n?', ''
 Set-Content -Path '$hostsPath' -Value `$h -Encoding ASCII -NoNewline
 ipconfig /flushdns | Out-Null
 "@
@@ -4011,15 +4011,15 @@ ipconfig /flushdns | Out-Null
                     'PF_BlockTelemetry' {
                         $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
                         if ($isChecked) {
-                            $lines = @("`n# SecurityMonitor-Telemetry-Start")
+                            $lines = @("`n# WHS-Telemetry-Start")
                             foreach ($d in $script:TelemetryDomains) { $lines += "0.0.0.0 $d" }
-                            $lines += "# SecurityMonitor-Telemetry-End"
+                            $lines += "# WHS-Telemetry-End"
                             $content = $lines -join "`n"
                             $elevatedScript = @"
 `$hostsFile = '$hostsPath'
 `$h = Get-Content `$hostsFile -Raw -ErrorAction SilentlyContinue
-if (`$h -match 'SecurityMonitor-Telemetry-Start') {
-    `$h = `$h -replace '(?s)\r?\n?# SecurityMonitor-Telemetry-Start.*?# SecurityMonitor-Telemetry-End\r?\n?', ''
+if (`$h -match 'WHS-Telemetry-Start') {
+    `$h = `$h -replace '(?s)\r?\n?# WHS-Telemetry-Start.*?# WHS-Telemetry-End\r?\n?', ''
     Set-Content -Path `$hostsFile -Value `$h -Encoding ASCII -NoNewline
 }
 Add-Content -Path `$hostsFile -Value '$($content -replace "'","''")' -Encoding ASCII
@@ -4029,7 +4029,7 @@ ipconfig /flushdns | Out-Null
                             $elevatedScript = @"
 `$h = Get-Content '$hostsPath' -Raw -ErrorAction Stop
 if ([string]::IsNullOrEmpty(`$h)) { `$h = '' }
-`$h = `$h -replace '(?s)\r?\n?# SecurityMonitor-Telemetry-Start.*?# SecurityMonitor-Telemetry-End\r?\n?', ''
+`$h = `$h -replace '(?s)\r?\n?# WHS-Telemetry-Start.*?# WHS-Telemetry-End\r?\n?', ''
 Set-Content -Path '$hostsPath' -Value `$h -Encoding ASCII -NoNewline
 ipconfig /flushdns | Out-Null
 "@
@@ -4051,15 +4051,15 @@ ipconfig /flushdns | Out-Null
                         }
                         if ($isChecked) {
                             $elevatedScript = @'
-Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_Out' -ErrorAction SilentlyContinue
-Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_TCP' -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_Out' -Direction Outbound -Protocol UDP -RemotePort 53 -Action Block -Profile Any -ErrorAction Stop | Out-Null
-New-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_TCP' -Direction Outbound -Protocol TCP -RemotePort 53 -Action Block -Profile Any -ErrorAction Stop | Out-Null
+Remove-NetFirewallRule -DisplayName 'WHS_DNSLock_Out' -ErrorAction SilentlyContinue
+Remove-NetFirewallRule -DisplayName 'WHS_DNSLock_TCP' -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName 'WHS_DNSLock_Out' -Direction Outbound -Protocol UDP -RemotePort 53 -Action Block -Profile Any -ErrorAction Stop | Out-Null
+New-NetFirewallRule -DisplayName 'WHS_DNSLock_TCP' -Direction Outbound -Protocol TCP -RemotePort 53 -Action Block -Profile Any -ErrorAction Stop | Out-Null
 '@
                         } else {
                             $elevatedScript = @'
-Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_Out' -ErrorAction SilentlyContinue
-Remove-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_TCP' -ErrorAction SilentlyContinue
+Remove-NetFirewallRule -DisplayName 'WHS_DNSLock_Out' -ErrorAction SilentlyContinue
+Remove-NetFirewallRule -DisplayName 'WHS_DNSLock_TCP' -ErrorAction SilentlyContinue
 '@
                         }
                     }
@@ -4591,16 +4591,16 @@ Start-Sleep -Milliseconds 1500
                 }
                 $anyProfile = $profiles | Select-Object -First 1
                 if ($anyProfile) {
-                    $inboundRule = Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllInbound' -ErrorAction SilentlyContinue
+                    $inboundRule = Get-NetFirewallRule -DisplayName 'WHS_BlockAllInbound' -ErrorAction SilentlyContinue
                     $results['FW_BlockInbound']  = ($anyProfile.DefaultInboundAction -eq 'Block') -or ($null -ne $inboundRule)
-                    $outboundRule = Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockAllOutbound' -ErrorAction SilentlyContinue
+                    $outboundRule = Get-NetFirewallRule -DisplayName 'WHS_BlockAllOutbound' -ErrorAction SilentlyContinue
                     $results['FW_BlockOutbound'] = ($anyProfile.DefaultOutboundAction -eq 'Block') -or ($null -ne $outboundRule)
                 }
-                $icmpRule = Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockICMP' -ErrorAction SilentlyContinue
+                $icmpRule = Get-NetFirewallRule -DisplayName 'WHS_BlockICMP' -ErrorAction SilentlyContinue
                 $results['FW_BlockPing'] = ($null -ne $icmpRule)
-                $lanRule = Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockLAN_In_192' -ErrorAction SilentlyContinue
+                $lanRule = Get-NetFirewallRule -DisplayName 'WHS_BlockLAN_In_192' -ErrorAction SilentlyContinue
                 $results['FW_BlockLAN'] = ($null -ne $lanRule)
-                $devRule = Get-NetFirewallRule -DisplayName 'SecurityMonitor_BlockDev_SMB_In' -ErrorAction SilentlyContinue
+                $devRule = Get-NetFirewallRule -DisplayName 'WHS_BlockDev_SMB_In' -ErrorAction SilentlyContinue
                 $llmnrDisabled = $false
                 try {
                     $llmnrReg = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -Name 'EnableMulticast' -ErrorAction SilentlyContinue
@@ -4640,12 +4640,12 @@ Start-Sleep -Milliseconds 1500
             } catch {}
             try {
                 $hostsContent = Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" -Raw -ErrorAction SilentlyContinue
-                $results['PF_BlockTrackers']  = ($hostsContent -match 'SecurityMonitor-Trackers-Start')
-                $results['PF_BlockMalware']   = ($hostsContent -match 'SecurityMonitor-Malware-Start')
-                $results['PF_BlockTelemetry'] = ($hostsContent -match 'SecurityMonitor-Telemetry-Start')
+                $results['PF_BlockTrackers']  = ($hostsContent -match 'WHS-Trackers-Start')
+                $results['PF_BlockMalware']   = ($hostsContent -match 'WHS-Malware-Start')
+                $results['PF_BlockTelemetry'] = ($hostsContent -match 'WHS-Telemetry-Start')
             } catch {}
             try {
-                $dnsLock = Get-NetFirewallRule -DisplayName 'SecurityMonitor_DNSLock_Out' -ErrorAction SilentlyContinue
+                $dnsLock = Get-NetFirewallRule -DisplayName 'WHS_DNSLock_Out' -ErrorAction SilentlyContinue
                 $results['PF_BlockDNSBypass'] = ($null -ne $dnsLock)
             } catch {}
             return $results
@@ -5324,7 +5324,7 @@ function Initialize-TrayIcon {
         $script:TrayIcon.Icon = [System.Drawing.SystemIcons]::Shield
     }
 
-    $script:TrayIcon.Text = "SecurityMonitor v7.0"
+    $script:TrayIcon.Text = "Whitehat Security v7.1"
     $script:TrayIcon.Visible = $true
 
     # Force tray icon to appear on first run - toggle visibility after message pump starts
@@ -5492,7 +5492,7 @@ function Send-ToastNotification {
     if ($script:TrayIcon) {
         try {
             $script:TrayIcon.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Warning
-            $script:TrayIcon.BalloonTipTitle = "SecurityMonitor: $Title"
+            $script:TrayIcon.BalloonTipTitle = "Whitehat Security: $Title"
             # Smart click hint based on category
             $clickHint = if ($AlertData) {
                 switch ($AlertData.Category) {
@@ -5536,7 +5536,7 @@ function Send-ToastNotification {
 <toast duration="long" launch="$launchUrl" activationType="protocol">
     <visual>
         <binding template="ToastGeneric">
-            <text>SecurityMonitor: $Title</text>
+            <text>Whitehat Security: $Title</text>
             <text>$Message</text>
             <text placement="attribution">Security Alert - $(Get-Date -Format 'HH:mm:ss') | Click for details</text>
         </binding>
@@ -6245,7 +6245,7 @@ function Watch-RegistryTampering {
         @{ Path = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; Name = "__PSLockdownPolicy"; BadIf = "4"; Desc = "PowerShell Constrained Language Mode active (limits .NET access)" },
 
         # ═══ IFEO settings ═══
-        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\SecurityMonitor.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger set on SecurityMonitor" },
+        @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\WhitehatSecurity.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger set on Whitehat Security" },
         @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\pwsh.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger set on PowerShell 7 (pwsh.exe)" },
         @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\wscript.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger set on WScript" },
         @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\cscript.exe"; Name = "Debugger"; BadIf = "exists"; Desc = "IFEO Debugger set on CScript" },
@@ -6498,7 +6498,7 @@ function Watch-RegistryTampering {
         }
     } catch {}
 
-    # ═══ Check for suspicious scheduled tasks targeting PowerShell/SecurityMonitor ═══
+    # ═══ Check for suspicious scheduled tasks targeting PowerShell/Whitehat Security ═══
     try {
         $suspiciousTasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
             $_.State -ne "Disabled" -and $_.Actions
@@ -6506,7 +6506,7 @@ function Watch-RegistryTampering {
             $task = $_
             foreach ($action in $task.Actions) {
                 if ($action.Execute -match '(?i)(powershell|pwsh|cmd|wscript|cscript)' -and
-                    $action.Arguments -match '(?i)(kill|stop|taskkill|SecurityMonitor|Remove-Item|del\s|erase)') {
+                    $action.Arguments -match '(?i)(kill|stop|taskkill|WhitehatSecurity|Remove-Item|del\s|erase)') {
                     [PSCustomObject]@{
                         TaskName = $task.TaskName
                         TaskPath = $task.TaskPath
@@ -6520,18 +6520,18 @@ function Watch-RegistryTampering {
             $alertKey = "TAMPER:Task:$($st.TaskPath)$($st.TaskName)"
             if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
                 $script:TamperAlerted[$alertKey] = $true
-                Send-Alert "SUSPICIOUS SCHEDULED TASK" "Task '$($st.TaskName)' may target SecurityMonitor" -Category "Registry Tampering" -ExtraDetails @{
+                Send-Alert "SUSPICIOUS SCHEDULED TASK" "Task '$($st.TaskName)' may target Whitehat Security" -Category "Registry Tampering" -ExtraDetails @{
                     "Task Name" = $st.TaskName
                     "Task Path" = $st.TaskPath
                     "Command"   = "$($st.Execute) $($st.Args)"
-                    "Threat"    = "Scheduled task may kill/disable SecurityMonitor"
+                    "Threat"    = "Scheduled task may kill/disable Whitehat Security"
                     "Action"    = "Disable-ScheduledTask -TaskName '$($st.TaskName)' -TaskPath '$($st.TaskPath)'"
                 }
             }
         }
     } catch {}
 
-    # ═══ Check Run/RunOnce for anti-SecurityMonitor entries ═══
+    # ═══ Check Run/RunOnce for anti-WhitehatSecurity entries ═══
     try {
         $runPaths = @(
             "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
@@ -6544,15 +6544,15 @@ function Watch-RegistryTampering {
             $props = Get-ItemProperty -Path $rp -ErrorAction SilentlyContinue
             foreach ($p in $props.PSObject.Properties) {
                 if ($p.Name -notin @("PSPath","PSParentPath","PSChildName","PSDrive","PSProvider")) {
-                    if ($p.Value -match '(?i)(taskkill.*powershell|stop.*SecurityMonitor|del.*SecurityMonitor|Remove-Item.*SecurityMonitor|kill.*powershell)') {
+                    if ($p.Value -match '(?i)(taskkill.*powershell|stop.*WhitehatSecurity|del.*WhitehatSecurity|Remove-Item.*WhitehatSecurity|kill.*powershell)') {
                         $alertKey = "TAMPER:Run:$rp\$($p.Name)"
                         if (-not $script:TamperAlerted.ContainsKey($alertKey)) {
                             $script:TamperAlerted[$alertKey] = $true
-                            Send-Alert "ANTI-MONITOR STARTUP ENTRY" "Run key '$($p.Name)' targets SecurityMonitor" -Category "Registry Tampering" -ExtraDetails @{
+                            Send-Alert "ANTI-MONITOR STARTUP ENTRY" "Run key '$($p.Name)' targets Whitehat Security" -Category "Registry Tampering" -ExtraDetails @{
                                 "Registry Path" = $rp
                                 "Entry Name"    = $p.Name
                                 "Command"       = "$($p.Value)"
-                                "Threat"        = "Startup entry designed to kill SecurityMonitor on boot"
+                                "Threat"        = "Startup entry designed to kill Whitehat Security on boot"
                                 "Action"        = "Remove-ItemProperty -Path '$rp' -Name '$($p.Name)'"
                             }
                         }
@@ -6570,7 +6570,7 @@ function Start-Monitoring {
     $banner = @"
 
   ======================================================
-    SECURITY MONITORING SYSTEM v7.1
+    ALL-IN-ONE WHITEHAT SECURITY TOOL v7.1
     Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
     Computer: $env:COMPUTERNAME
     User: $env:USERNAME
@@ -6580,16 +6580,16 @@ function Start-Monitoring {
 
 "@
     Write-Host $banner -ForegroundColor Cyan
-    Write-Console "SecurityMonitor v7.0 starting..." "OK"
+    Write-Console "Whitehat Security v7.1 starting..." "OK"
     Write-Log "=== MONITORING STARTED === Computer: $env:COMPUTERNAME | User: $env:USERNAME" -Level "INFO"
 
     # ── Acquire a system-wide mutex so Launcher.ps1 can detect us ──
     $script:AppMutex = $null
     try {
         $createdNew = $false
-        $script:AppMutex = [System.Threading.Mutex]::new($true, "Global\SecurityMonitor_Running", [ref]$createdNew)
+        $script:AppMutex = [System.Threading.Mutex]::new($true, "Global\WHS_Running", [ref]$createdNew)
         if (-not $createdNew) {
-            Write-Warn "Another SecurityMonitor instance is already running - exiting."
+            Write-Warn "Another Whitehat Security instance is already running - exiting."
             try { $script:AppMutex.ReleaseMutex() } catch {}
             $script:AppMutex.Dispose()
             $script:AppMutex = $null
@@ -6930,7 +6930,7 @@ function Start-Monitoring {
     $script:SignalTimer.Interval = 1000
     $script:SignalTimer.Add_Tick({
         try {
-            $sigFile = Join-Path $env:TEMP "SecurityMonitor_OpenDashboard.signal"
+            $sigFile = Join-Path $env:TEMP "WHS_OpenDashboard.signal"
             if (Test-Path $sigFile) {
                 Remove-Item $sigFile -Force -ErrorAction SilentlyContinue
                 try { Show-Dashboard } catch {}
