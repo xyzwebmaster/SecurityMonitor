@@ -2289,7 +2289,7 @@ function Show-Dashboard {
     $detailBox = New-Object System.Windows.Forms.Panel
     $detailBox.Name = "detailBox"
     $detailBox.Location = New-Object System.Drawing.Point(25, 358)
-    $detailBox.Size = New-Object System.Drawing.Size(770, 230)
+    $detailBox.Size = New-Object System.Drawing.Size(770, 300)
     $detailBox.BackColor = $colCard
     $detailBox.AutoScroll = $true
     $detailBox.Anchor = [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
@@ -2823,8 +2823,9 @@ try {
 
             $script:DetailContent.ResumeLayout($true)
 
-            # Auto-resize DetailContent panel to fit all rows
-            $script:DetailContent.Height = [Math]::Max(80, $dy + 5)
+            # Auto-resize DetailContent panel to fit all rows (cap height so buttons stay visible)
+            $maxContentH = 160
+            $script:DetailContent.Height = [Math]::Min($maxContentH, [Math]::Max(80, $dy + 5))
 
             # Reposition buttons below content - all left-aligned in rows
             $btnY = $script:DetailContent.Bottom + 12
