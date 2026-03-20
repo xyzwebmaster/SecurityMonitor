@@ -1,6 +1,6 @@
-# SecurityMonitor - Real-Time Security Monitoring Dashboard
+# SecurityMonitor — Real-Time Security Monitoring & Threat Detection
 
-A PowerShell-based security monitoring tool with a modern dark-themed WinForms dashboard. Performs continuous system-level monitoring including network connections, processes, drivers, services, registry tampering, and **AI-powered threat detection** — all running locally with no cloud dependency.
+A pure PowerShell security monitoring tool with a modern dark-themed WinForms dashboard. Performs continuous system-level monitoring with **8-engine AI threat detection** covering memory injection, kernel integrity, BYOVD attacks, hidden processes, and hardware security — all running locally with zero cloud dependency and zero external binaries.
 
 ![SecurityMonitor Dashboard](screenshots/dashboard.png)
 
@@ -12,79 +12,90 @@ Open PowerShell as Administrator and paste:
 powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest 'https://raw.githubusercontent.com/xyzwebmaster/SecurityMonitor/master/Install.ps1' -OutFile '$env:TEMP\SM_Install.ps1' -UseBasicParsing; & '$env:TEMP\SM_Install.ps1'"
 ```
 
-This single command downloads the full project, installs [HollowsHunter](https://github.com/hasherezade/hollows_hunter) for AI memory scanning, creates a scheduled task, desktop shortcut, and starts monitoring immediately.
+Downloads the project, creates a scheduled task + desktop shortcut, and starts monitoring immediately.
 
 ## Features
 
-### Dashboard UI
-- **Modern Dark Theme**: Tabbed WinForms interface with collapsible sidebar navigation (`<<` / `>>`)
-- **5 Tabs**: Status, Alerts, AI Threats (optional), Settings, Logs
-- **Live Status Page**: 4 stat cards (Total Alerts, Connections, Processes, Uptime), CPU/RAM/Disk gauges, Security Posture panel (Defender, Firewall, UAC, RDP), Network Activity summary, AI Detection summary, and Recent Alerts preview
-- **Responsive Layout**: All panels, stat cards, gauge bars, ListViews, and detail panels resize proportionally with the window
-- **System Tray**: Minimizes to tray with NotifyIcon; balloon/toast notifications; single-instance detection via named mutex
-- **OwnerDraw ListViews**: Custom-rendered rows with severity color coding, alternating row colors, and accent bars
+### Dashboard (6 Tabs)
+- **Status** — Live stat cards, CPU/RAM/Disk gauges, 8-indicator Security Posture panel, Network Activity, AI Detection summary, Recent Alerts
+- **Alerts** — Filterable alert history with severity/category/search, detail panel, 6 action buttons (Kill Process, Block IP, Stop Service, Restore Registry, IP Lookup, Open Log), CSV export
+- **AI Threats** — 8-engine on-demand threat scanner with risk-colored ListView and detail panel
+- **Settings** — Display settings, Firewall/Network protection toggles, DNS provider + DoH (IPv4/IPv6), hosts-file blocking
+- **Logs** — Quick access to daily log files and baseline snapshots
+- **Console** — Live color-coded debug/error output for all operations
 
-### Alert System
-- **Filterable Alert History**: Filter by severity (CRIT/HIGH/MED/LOW/INFO) and category, with keyword search
-- **5 Columns**: Time, Severity, Category, Title, Message — all auto-resize with window
-- **Detail Panel**: Shows full alert details on selection
-- **6 Action Buttons** (context-sensitive, appear based on alert type):
-  - **Kill Process** — terminates process by PID, with UAC elevation fallback
-  - **Stop/Start Service** — toggles service state with UAC elevation
-  - **Block IP** — creates Windows Firewall deny rule for remote IP
-  - **Restore Registry** — reverts tampered registry values/keys to expected state
-  - **IP Lookup** — opens ipinfo.io for remote IP investigation
-  - **Open Alert Log** — opens daily alert log in Notepad
-- **Export to CSV**: Export filtered alert history
+### 8-Engine AI Threat Detection
 
-### AI Threat Detection (Optional)
-Enable from Settings tab — off by default to save resources.
+On-demand scanning from the AI Threats tab — no background resource usage until you click "Scan."
 
-- **Behavioral Analysis Engine** (pure PowerShell, fully local):
-  - Suspicious parent-child process trees (e.g. Word → cmd.exe, svchost → powershell)
-  - Base64/encoded PowerShell command detection
-  - Download cradle patterns (Invoke-Expression, DownloadString, WebClient)
-  - Windows Defender evasion attempts (exclusion paths, disabling real-time monitoring)
-  - Known attack tool detection (mimikatz, rubeus, sharphound, bloodhound, lazagne)
-  - Unsigned executables running from suspicious locations (Temp, Downloads, Public, ProgramData)
-  - High-entropy (randomized) process name detection
-  - Fileless/deleted executable detection (running process with no file on disk)
-  - System process masquerading (svchost.exe, lsass.exe, csrss.exe from wrong path)
-- **HollowsHunter Integration**: Memory injection scanner — detects process hollowing, DLL injection, IAT hooking, shellcode, inline hooks, and header modifications
-- **Self-Exclusion**: Automatically whitelists own PID, parent chain, and child processes to prevent false positives
-- **Dedicated AI Threats Tab**: Risk-colored ListView with detail panel and Kill Process button
-- **Auto-Scan**: Runs on startup and every 5 minutes when enabled
-- **Status Page Panel**: Shows threat count and last scan time with "Scan Now" button
+| # | Engine | What It Detects |
+|---|--------|----------------|
+| 1 | **MemScanner** | RWX memory regions (shellcode), unbacked executable memory (injection), suspicious DLL paths, process hollowing (size mismatch) |
+| 2 | **Behavioral** | Suspicious parent-child trees, encoded PowerShell, download cradles, Defender evasion, known attack tools, fileless processes, process masquerading |
+| 3 | **SecureBoot/TPM** | Secure Boot disabled, TPM not ready, BitLocker off, Kernel DMA Protection missing |
+| 4 | **BYOVD** | 40+ known vulnerable driver hashes (loldrivers.io), unsigned boot drivers, tampered driver signatures |
+| 5 | **HiddenProc** | API cross-reference: Get-Process vs WMI vs NtQuerySystemInformation — mismatches reveal rootkit-hidden processes |
+| 6 | **ETW** | Code Integrity violations, privilege escalation volume, rogue PnP devices, Sysmon unsigned driver loads |
+| 7 | **DriverSig** | All running drivers checked for valid signatures, hash mismatches, missing-on-disk files |
+| 8 | **Hypervisor** | HVCI (Memory Integrity) status, Credential Guard, VM detection |
 
-### 10 Monitoring Categories
-Each can be independently toggled on/off from the Settings tab:
+Uses Windows API P/Invoke (`VirtualQueryEx`, `NtQuerySystemInformation`) for memory and process scanning — no external tools required.
 
-| Category | Icon | What It Monitors |
-|----------|------|-----------------|
-| Firmware Integrity | `[FW]` | SHA-256 hash changes of `.sys`, `.efi`, `.rom`, `.bin`, `.fw`, `.cap` files |
-| Driver Changes | `[DR]` | New drivers loaded or existing drivers removed |
-| New Services | `[SV]` | Newly installed or registered Windows services |
-| Network Connections | `[CN]` | Outbound connections from unrecognized processes |
-| Unsigned Processes | `[PR]` | Processes without valid digital signatures |
-| New Listening Ports | `[LP]` | Ports opened by non-system processes |
-| Registry Tampering | `[RG]` | 90+ checks: IFEO debuggers, Defender policies, COM hijacking, startup keys, etc. |
-| Security Events | `[SE]` | Remote logons, failed logins, new accounts, new service installs (Event Log) |
-| RDP Status | `[RD]` | Remote Desktop enabled/disabled detection |
-| Hosts File | `[HF]` | DNS redirection changes in Windows hosts file |
+### Security Posture (Status Page)
 
-### Settings & Notifications
-- **Per-Category Toggles**: Enable/disable each of the 10 monitoring categories
-- **Detailed Threat Info**: Optional severity levels and threat/recommendation details (off by default for a neutral, non-alarming experience)
-- **Windows Desktop Notifications**: Toggle toast/balloon notifications on/off; alerts always remain accessible in the GUI
-- **AI Threat Detection**: Enable/disable with resource usage warning
-- **Select All / Deselect All**: Bulk toggle for monitoring categories
-- **Instant Save**: All settings persist immediately to `notification_config.json`
+8 real-time indicators polled by background runspace:
 
-### Background Architecture
-- **Non-blocking UI**: Heavy I/O (WMI, network, registry scans) runs in background runspaces via synchronized hashtables
-- **Dashboard Runspace**: Dedicated thread for CPU/RAM/Disk/Network/Security posture polling (10s interval)
-- **Monitor Runspace**: Dedicated thread for all monitoring engines (configurable interval, default 10s)
-- **UI Timer**: Fast 2s refresh reads cached data only — never calls WMI/CIM directly
+| Row 1 | Row 2 |
+|-------|-------|
+| Defender: ON/OFF | SecureBoot: ON/OFF |
+| Firewall: ON/PARTIAL | TPM: Ready/N/A |
+| UAC: Enabled/DISABLED | HVCI: ON/OFF |
+| RDP: Disabled/ENABLED | BitLocker: ON/OFF |
+
+### Firewall & Network Protection (Settings Tab)
+
+All settings use elevated PowerShell with async verification (pessimistic revert on UAC cancel):
+
+| Setting | Effect |
+|---------|--------|
+| Domain/Private/Public Firewall Profile | Enable with safe defaults (`-DefaultOutboundAction Allow`) |
+| Block All Inbound | Firewall profile default + explicit block rule + WFP |
+| Block All Outbound | Firewall profile default + explicit block rule + WFP |
+| Block ICMP Ping | Firewall rule blocks incoming echo requests |
+| Block LAN Traffic | 6 rules blocking 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12 |
+| Block Device Connections | SMB/NetBIOS/LLMNR/mDNS/SSDP/UPnP firewall rules + service disable |
+| Block Trackers/Malware/Telemetry | Hosts file domain blocking |
+| Prevent DNS Bypass | Port 53 firewall lock |
+
+### DNS & Secure DNS
+
+- **6 DNS Providers**: Cloudflare, Quad9, Google, OpenDNS, AdGuard, or System Default
+- **DNS over HTTPS (DoH)**: Sets per-adapter `DohFlags=1` (automatic template) for both IPv4 and IPv6 via Windows native API (`Add-DnsClientDohServerAddress` + .NET Registry API)
+- **Auto re-apply**: When DNS provider changes while DoH is active, DoH is automatically re-configured for the new provider
+
+### 10 Continuous Monitoring Categories
+
+Each independently toggleable from Settings:
+
+| Category | What It Monitors |
+|----------|-----------------|
+| Firmware Integrity | SHA-256 hash changes of `.sys`, `.efi`, `.rom`, `.bin`, `.fw`, `.cap` files |
+| Driver Changes | New drivers loaded or existing drivers removed |
+| New Services | Newly installed Windows services |
+| Network Connections | Outbound connections from unrecognized processes |
+| Unsigned Processes | Processes without valid digital signatures |
+| New Listening Ports | Ports opened by non-system processes |
+| Registry Tampering | 90+ checks: IFEO debuggers, Defender policies, COM hijacking, UAC bypass, AMSI disable, etc. |
+| Security Events | Remote logons, failed logins, new accounts, service installs (Event Log) |
+| RDP Status | Remote Desktop enabled/disabled detection |
+| Hosts File | DNS redirection changes |
+
+### Architecture
+- **Non-blocking UI**: Heavy I/O runs in background runspaces via synchronized hashtables
+- **No `.GetNewClosure()`**: All async callbacks use `$script:FWCallbackData` + `$this.Tag` pattern (avoids PS 5.1 module scope bugs)
+- **No external binaries**: Pure PowerShell + P/Invoke. No hollows_hunter, no CHIPSEC, no third-party tools
+- **No IPSec commands**: Removed to prevent Defender CobaltStrike false positives
+- **Console tab**: Every operation logged with timestamps and color-coded severity
 
 ## Requirements
 
@@ -100,46 +111,16 @@ Each can be independently toggled on/off from the Settings tab:
 powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest 'https://raw.githubusercontent.com/xyzwebmaster/SecurityMonitor/master/Install.ps1' -OutFile '$env:TEMP\SM_Install.ps1' -UseBasicParsing; & '$env:TEMP\SM_Install.ps1'"
 ```
 
-The installer automatically:
-1. Downloads the full repository to `%USERPROFILE%\SecurityMonitor\`
-2. Downloads [HollowsHunter](https://github.com/hasherezade/hollows_hunter) to `Tools\hollows_hunter.exe`
-3. Sets execution policy if needed
-4. Creates `Logs\` and `Baselines\` directories
-5. Registers a scheduled task (auto-starts at every logon with highest privileges)
-6. Starts monitoring immediately
-
-### Local Install
-
-If you already have the files (e.g. via `git clone`):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File Install.ps1
-```
-
 ### Manual Start
-
-Run directly without the installer:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File SecurityMonitor.ps1
-```
-
-### Desktop Shortcut
-
-The installer creates a desktop shortcut via `Launcher.ps1`, which:
-- Starts SecurityMonitor with UAC elevation if not already running
-- Opens the dashboard if an instance is already active (signal file mechanism)
-
-## Usage
 
 ```powershell
 # Interactive mode (dashboard opens)
 powershell -ExecutionPolicy Bypass -File SecurityMonitor.ps1
 
-# Silent mode (tray only, no console window)
+# Silent mode (tray only)
 powershell -ExecutionPolicy Bypass -File SecurityMonitor.ps1 -Silent
 
-# Custom scan interval (seconds)
+# Custom scan interval
 powershell -ExecutionPolicy Bypass -File SecurityMonitor.ps1 -IntervalSeconds 5
 ```
 
@@ -147,20 +128,21 @@ powershell -ExecutionPolicy Bypass -File SecurityMonitor.ps1 -IntervalSeconds 5
 
 ```
 SecurityMonitor/
-├── SecurityMonitor.ps1      # Main monitoring script + dashboard
+├── SecurityMonitor.ps1      # Main script (~7000 lines) — monitoring + dashboard + all engines
+├── SmWfpEngine.ps1          # WFP (Windows Filtering Platform) helper for firewall rules
 ├── Launcher.ps1             # Desktop shortcut target (UAC + single-instance)
-├── Install.ps1              # Installer (downloads deps, creates task/shortcut)
+├── Install.ps1              # Installer (downloads repo, creates task/shortcut)
 ├── notification_config.json # User preferences (auto-generated)
-├── Tools/
-│   └── hollows_hunter.exe   # AI memory scanner (auto-downloaded by installer)
 ├── Logs/
-│   ├── monitor_YYYY-MM-DD.log      # General monitoring events
-│   ├── alerts_YYYY-MM-DD.log       # Security alerts only
-│   └── connections_YYYY-MM-DD.log  # Network connection history
+│   ├── monitor_YYYY-MM-DD.log
+│   ├── alerts_YYYY-MM-DD.log
+│   ├── connections_YYYY-MM-DD.log
+│   └── processes_YYYY-MM-DD.log
 ├── Baselines/
-│   ├── firmware_hashes.json   # Firmware/driver file SHA-256 hashes
-│   ├── driver_baseline.json   # Loaded driver snapshot
-│   └── service_baseline.json  # Service snapshot
+│   ├── firmware_hashes.json
+│   ├── driver_baseline.json
+│   └── service_baseline.json
+├── driver/SmKext/src/       # Kernel driver source (WFP callout — optional)
 └── screenshots/
     └── dashboard.png
 ```
@@ -168,10 +150,7 @@ SecurityMonitor/
 ## Uninstall
 
 ```powershell
-# Remove scheduled task
 Unregister-ScheduledTask -TaskName "SecurityMonitor" -Confirm:$false
-
-# Remove desktop shortcut
 Remove-Item "$env:USERPROFILE\Desktop\SecurityMonitor.lnk" -ErrorAction SilentlyContinue
 ```
 
