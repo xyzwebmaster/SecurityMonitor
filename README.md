@@ -6,13 +6,21 @@ A pure PowerShell security monitoring tool with a modern dark-themed WinForms da
 
 ## Quick Install
 
+### Option 1: One-Click EXE Installer
+
+Download and run — UAC prompts for admin, then installs everything automatically:
+
+[**Download WhitehatSecuritySetup.exe**](https://github.com/xyzwebmaster/All-in-One-Whitehat-Security-Tool/releases/latest/download/WhitehatSecuritySetup.exe)
+
+### Option 2: PowerShell One-Liner
+
 Open PowerShell as Administrator and paste:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest 'https://raw.githubusercontent.com/xyzwebmaster/All-in-One-Whitehat-Security-Tool/master/Install.ps1' -OutFile '$env:TEMP\SM_Install.ps1' -UseBasicParsing; & '$env:TEMP\SM_Install.ps1'"
 ```
 
-Downloads the project, creates a scheduled task + desktop shortcut, and starts monitoring immediately.
+Both options download the project, create a scheduled task + desktop shortcut, and start monitoring immediately.
 
 ## Features
 
@@ -105,7 +113,11 @@ Each independently toggleable from Settings:
 
 ## Installation
 
-### One-Line Install (Recommended)
+### EXE Installer (Recommended)
+
+[**Download WhitehatSecuritySetup.exe**](https://github.com/xyzwebmaster/All-in-One-Whitehat-Security-Tool/releases/latest/download/WhitehatSecuritySetup.exe) — double-click, approve UAC, done.
+
+### PowerShell One-Liner
 
 ```powershell
 powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest 'https://raw.githubusercontent.com/xyzwebmaster/All-in-One-Whitehat-Security-Tool/master/Install.ps1' -OutFile '$env:TEMP\SM_Install.ps1' -UseBasicParsing; & '$env:TEMP\SM_Install.ps1'"
