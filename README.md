@@ -6,11 +6,11 @@ A pure PowerShell security monitoring tool with a modern dark-themed WinForms da
 
 ## Quick Install
 
-### Option 1: One-Click Installer
+### Option 1: One-Click EXE Installer
 
 Download and double-click — UAC prompts for admin, then installs everything automatically:
 
-[**Download Install.bat**](https://github.com/xyzwebmaster/All-in-One-Whitehat-Security-Tool/releases/latest/download/Install.bat)
+[**Download WhitehatSecuritySetup.exe**](https://github.com/xyzwebmaster/All-in-One-Whitehat-Security-Tool/releases/latest/download/WhitehatSecuritySetup.exe)
 
 ### Option 2: PowerShell One-Liner
 
@@ -113,9 +113,9 @@ Each independently toggleable from Settings:
 
 ## Installation
 
-### Batch Installer (Recommended)
+### EXE Installer (Recommended)
 
-[**Download Install.bat**](https://github.com/xyzwebmaster/All-in-One-Whitehat-Security-Tool/releases/latest/download/Install.bat) — double-click, approve UAC, done.
+[**Download WhitehatSecuritySetup.exe**](https://github.com/xyzwebmaster/All-in-One-Whitehat-Security-Tool/releases/latest/download/WhitehatSecuritySetup.exe) — double-click, approve UAC, done.
 
 ### PowerShell One-Liner
 
