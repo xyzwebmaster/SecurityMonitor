@@ -1,3 +1,5 @@
 Logs/
 Baselines/
 notification_config.json
+*.exe
+InstallerSource.cs
