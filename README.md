@@ -1,4 +1,4 @@
-# SecurityMonitor — Real-Time Security Monitoring & Threat Detection
+# All-in-One Whitehat Security Tool — Real-Time Monitoring & Threat Detection
 
 A pure PowerShell security monitoring tool with a modern dark-themed WinForms dashboard. Performs continuous system-level monitoring with **8-engine AI threat detection** covering memory injection, kernel integrity, BYOVD attacks, hidden processes, and hardware security — all running locally with zero cloud dependency and zero external binaries.
 
@@ -9,7 +9,7 @@ A pure PowerShell security monitoring tool with a modern dark-themed WinForms da
 Open PowerShell as Administrator and paste:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest 'https://raw.githubusercontent.com/xyzwebmaster/SecurityMonitor/master/Install.ps1' -OutFile '$env:TEMP\SM_Install.ps1' -UseBasicParsing; & '$env:TEMP\SM_Install.ps1'"
+powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest 'https://raw.githubusercontent.com/xyzwebmaster/All-in-One-Whitehat-Security-Tool/master/Install.ps1' -OutFile '$env:TEMP\SM_Install.ps1' -UseBasicParsing; & '$env:TEMP\SM_Install.ps1'"
 ```
 
 Downloads the project, creates a scheduled task + desktop shortcut, and starts monitoring immediately.
@@ -108,7 +108,7 @@ Each independently toggleable from Settings:
 ### One-Line Install (Recommended)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest 'https://raw.githubusercontent.com/xyzwebmaster/SecurityMonitor/master/Install.ps1' -OutFile '$env:TEMP\SM_Install.ps1' -UseBasicParsing; & '$env:TEMP\SM_Install.ps1'"
+powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest 'https://raw.githubusercontent.com/xyzwebmaster/All-in-One-Whitehat-Security-Tool/master/Install.ps1' -OutFile '$env:TEMP\SM_Install.ps1' -UseBasicParsing; & '$env:TEMP\SM_Install.ps1'"
 ```
 
 ### Manual Start

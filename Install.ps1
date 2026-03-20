@@ -20,7 +20,7 @@ if (-not (Test-Path $monitorScript)) {
     $extractDir = Join-Path $env:TEMP "SecurityMonitor_extract"
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri "https://github.com/xyzwebmaster/SecurityMonitor/archive/refs/heads/master.zip" -OutFile $repoZip -UseBasicParsing
+        Invoke-WebRequest -Uri "https://github.com/xyzwebmaster/All-in-One-Whitehat-Security-Tool/archive/refs/heads/master.zip" -OutFile $repoZip -UseBasicParsing
         if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
         Expand-Archive -Path $repoZip -DestinationPath $extractDir -Force
         $innerDir = Get-ChildItem $extractDir | Select-Object -First 1
@@ -35,24 +35,8 @@ if (-not (Test-Path $monitorScript)) {
         Write-Host "  -> Downloaded to $targetDir" -ForegroundColor Green
     } catch {
         Write-Host "  -> Download failed: $_" -ForegroundColor Red
-        Write-Host "     Please download manually from https://github.com/xyzwebmaster/SecurityMonitor" -ForegroundColor Yellow
+        Write-Host "     Please download manually from https://github.com/xyzwebmaster/All-in-One-Whitehat-Security-Tool" -ForegroundColor Yellow
         exit 1
-    }
-}
-
-# 0.5. Download HollowsHunter (AI memory scanner)
-$toolsDir = Join-Path $scriptDir "Tools"
-$hhPath = Join-Path $toolsDir "hollows_hunter.exe"
-if (-not (Test-Path $hhPath)) {
-    Write-Host "[AI] Downloading HollowsHunter (memory injection scanner)..." -ForegroundColor Cyan
-    try {
-        if (-not (Test-Path $toolsDir)) { New-Item -ItemType Directory -Path $toolsDir -Force | Out-Null }
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $hhUrl = "https://github.com/hasherezade/hollows_hunter/releases/download/v0.4.1.1/hollows_hunter64.exe"
-        Invoke-WebRequest -Uri $hhUrl -OutFile $hhPath -UseBasicParsing
-        Write-Host "  -> HollowsHunter installed to Tools\" -ForegroundColor Green
-    } catch {
-        Write-Host "  -> HollowsHunter download failed (AI detection will use behavioral analysis only)" -ForegroundColor Yellow
     }
 }
 
